@@ -1,0 +1,59 @@
+---Table Scripts---
+-- Configuration table for dynamic filters
+CREATE TABLE FilterConfig (
+    FilterID INT IDENTITY PRIMARY KEY,
+    ColumnName NVARCHAR(128),
+    Operator NVARCHAR(10),        -- e.g., '=', '<>', 'IN', 'BETWEEN'
+    Value1 NVARCHAR(255),
+    Value2 NVARCHAR(255),         -- Used for BETWEEN
+    LogicOp NVARCHAR(10),         -- e.g., AND, OR
+    OpenParen BIT DEFAULT 0,
+    CloseParen BIT DEFAULT 0
+);
+
+-- Cache table for built dynamic queries
+CREATE TABLE QueryCache (
+    CacheID INT IDENTITY PRIMARY KEY,
+    TableName NVARCHAR(128),
+    FilterHash NVARCHAR(64),
+    SqlText NVARCHAR(MAX),
+    ParamDefs NVARCHAR(MAX),
+    CreatedAt DATETIME DEFAULT GETDATE()
+);
+
+-- Audit log table for executed queries
+CREATE TABLE QueryAuditLog (
+    AuditID INT IDENTITY PRIMARY KEY,
+    TableName NVARCHAR(128),
+    ExecutedSql NVARCHAR(MAX),
+    ParamDefs NVARCHAR(MAX),
+    ParamValues NVARCHAR(MAX),
+    ExecutedAt DATETIME DEFAULT GETDATE()
+);
+
+--Example Usage---------
+CREATE TABLE Employees (
+    EmployeeID INT,
+    FirstName NVARCHAR(50),
+    LastName NVARCHAR(50),
+    Department NVARCHAR(50),
+    HireDate DATE,
+    Salary DECIMAL(10,2)
+);
+
+-- Insert filter config to select all IT employees hired after 2020---
+DELETE FROM FilterConfig;
+
+INSERT INTO FilterConfig (ColumnName, Operator, Value1, LogicOp)
+VALUES 
+('Department', '=', 'IT', 'AND'),
+('HireDate', '>', '2020-01-01', NULL);
+
+--Execute the query--
+EXEC usp_GetFilteredData @TableName = 'Employees';
+
+--View query history---
+EXEC usp_GetQueryAuditLog @TableName = 'Employees';
+
+--Replay a specific query----
+EXEC usp_ReplayAuditQuery @AuditID = 1;
