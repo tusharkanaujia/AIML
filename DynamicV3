@@ -1,0 +1,235 @@
+-- ================================================
+-- Dynamic Query Builder with Type Detection, Caching, Joins & Audit Logging
+-- ================================================
+CREATE PROCEDURE usp_GetFilteredData
+    @TableName NVARCHAR(128),
+    @JoinClause NVARCHAR(MAX) = NULL,
+    @SubqueryWrapper NVARCHAR(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE 
+        @sql NVARCHAR(MAX) = '',
+        @whereClause NVARCHAR(MAX) = '',
+        @paramDefs NVARCHAR(MAX) = '',
+        @paramValues NVARCHAR(MAX) = '',
+        @paramCounter INT = 1,
+        @paramName1 NVARCHAR(50),
+        @paramName2 NVARCHAR(50),
+        @expression NVARCHAR(MAX),
+        @logic NVARCHAR(10),
+        @open BIT,
+        @close BIT,
+        @filterText NVARCHAR(MAX),
+        @filterHash NVARCHAR(64)
+
+    DECLARE @paramMap TABLE (
+        ParamName NVARCHAR(50),
+        ParamValue NVARCHAR(255),
+        DataType NVARCHAR(50)
+    )
+
+    DECLARE @ProcessedColumns TABLE (
+        ColumnName NVARCHAR(128),
+        Operator NVARCHAR(10)
+    )
+
+    DECLARE @DataTypes TABLE (ColumnName NVARCHAR(128), SqlType NVARCHAR(50))
+
+    -- Build hash from FilterConfig
+    SELECT @filterText = STRING_AGG(
+        ColumnName + Operator + ISNULL(Value1, '') + ISNULL(Value2, '') + ISNULL(LogicOp, '') +
+        CAST(OpenParen AS NVARCHAR) + CAST(CloseParen AS NVARCHAR), '|'
+    ) FROM FilterConfig
+
+    SELECT @filterHash = CONVERT(NVARCHAR(64), HASHBYTES('SHA2_256', @filterText), 2)
+
+    -- Check for cached query
+    SELECT @sql = SqlText, @paramDefs = ParamDefs
+    FROM QueryCache
+    WHERE TableName = @TableName AND FilterHash = @filterHash
+
+    IF @sql IS NOT NULL
+    BEGIN
+        SELECT @paramValues = STRING_AGG(ParamName + ' = ''' + REPLACE(ParamValue, '''', '''''') + '''', ', ')
+        FROM @paramMap
+
+        EXEC sp_executesql @sql, @paramDefs, @paramValues
+        RETURN
+    END
+
+    -- Load column data types from the table
+    INSERT INTO @DataTypes
+    SELECT COLUMN_NAME,
+           CASE 
+               WHEN DATA_TYPE IN ('varchar', 'nvarchar', 'char', 'nchar') THEN DATA_TYPE + '(' + 
+                    CASE 
+                        WHEN CHARACTER_MAXIMUM_LENGTH = -1 THEN 'MAX'
+                        ELSE CAST(CHARACTER_MAXIMUM_LENGTH AS NVARCHAR)
+                    END + ')'
+               WHEN DATA_TYPE IN ('int', 'bigint', 'bit', 'datetime', 'date', 'float', 'decimal', 'numeric') THEN DATA_TYPE
+               ELSE 'NVARCHAR(255)'
+           END AS SqlType
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = @TableName
+
+    -- Handle IN clauses
+    DECLARE @inWhere NVARCHAR(MAX) = ''
+
+    ;WITH InClauses AS (
+        SELECT 
+            ColumnName,
+            STRING_AGG('''' + REPLACE(Value1, '''', '''''') + '''', ',') AS AllValues,
+            MAX(ISNULL(LogicOp, '')) AS LogicOp
+        FROM FilterConfig
+        WHERE Operator = 'IN'
+        GROUP BY ColumnName
+    )
+    SELECT @inWhere = STRING_AGG(
+        CASE 
+            WHEN ic.LogicOp IS NOT NULL AND LEN(@inWhere) > 0 THEN ' ' + ic.LogicOp + ' ' 
+            ELSE '' 
+        END + QUOTENAME(ic.ColumnName) + ' IN (' + ic.AllValues + ')',
+        ''
+    )
+    FROM InClauses ic
+
+    -- Handle non-IN conditions
+    DECLARE cur CURSOR FOR
+        SELECT ColumnName, Operator, Value1, Value2, LogicOp, OpenParen, CloseParen
+        FROM FilterConfig
+        WHERE Operator <> 'IN'
+        ORDER BY FilterID
+
+    DECLARE 
+        @column NVARCHAR(128),
+        @operator NVARCHAR(10),
+        @val1 NVARCHAR(255),
+        @val2 NVARCHAR(255)
+
+    OPEN cur
+    FETCH NEXT FROM cur INTO @column, @operator, @val1, @val2, @logic, @open, @close
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @expression = ''
+        SET @paramName1 = '@param' + CAST(@paramCounter AS NVARCHAR)
+        SET @paramCounter += 1
+
+        IF LEN(@whereClause) > 0 AND @logic IS NOT NULL
+            SET @expression += ' ' + @logic + ' '
+
+        IF @open = 1
+            SET @expression += '('
+
+        SET @expression += QUOTENAME(@column) + ' '
+
+        DECLARE @colType NVARCHAR(50)
+        SELECT @colType = SqlType FROM @DataTypes WHERE ColumnName = @column
+
+        IF @operator = 'BETWEEN'
+        BEGIN
+            SET @paramName2 = '@param' + CAST(@paramCounter AS NVARCHAR)
+            SET @paramCounter += 1
+
+            SET @expression += 'BETWEEN ' + @paramName1 + ' AND ' + @paramName2
+            INSERT INTO @paramMap VALUES (@paramName1, @val1, @colType)
+            INSERT INTO @paramMap VALUES (@paramName2, @val2, @colType)
+        END
+        ELSE
+        BEGIN
+            SET @expression += @operator + ' ' + @paramName1
+            INSERT INTO @paramMap VALUES (@paramName1, @val1, @colType)
+        END
+
+        IF @close = 1
+            SET @expression += ')'
+
+        SET @whereClause += @expression
+
+        FETCH NEXT FROM cur INTO @column, @operator, @val1, @val2, @logic, @open, @close
+    END
+
+    CLOSE cur
+    DEALLOCATE cur
+
+    -- Combine WHERE clauses
+    IF LEN(@inWhere) > 0 AND LEN(@whereClause) > 0
+        SET @whereClause = '(' + @inWhere + ') AND (' + @whereClause + ')'
+    ELSE IF LEN(@inWhere) > 0
+        SET @whereClause = @inWhere
+
+    -- Build paramDefs and paramValues
+    SELECT 
+        @paramDefs = STRING_AGG(ParamName + ' ' + DataType, ','),
+        @paramValues = STRING_AGG(ParamName + ' = ''' + REPLACE(ParamValue, '''', '''''') + '''', ', ')
+    FROM @paramMap
+
+    -- Build base SQL
+    SET @sql = 'SELECT * FROM ' + QUOTENAME(@TableName)
+
+    IF @JoinClause IS NOT NULL
+        SET @sql += ' ' + @JoinClause
+
+    IF LEN(@whereClause) > 0
+        SET @sql += ' WHERE ' + @whereClause
+
+    IF @SubqueryWrapper IS NOT NULL
+        SET @sql = REPLACE(@SubqueryWrapper, '{query}', '(' + @sql + ')')
+
+    -- Cache compiled SQL
+    INSERT INTO QueryCache (TableName, FilterHash, SqlText, ParamDefs)
+    VALUES (@TableName, @filterHash, @sql, @paramDefs)
+
+    -- Log query for audit/debugging
+    INSERT INTO QueryAuditLog (TableName, ExecutedSql, ParamDefs, ParamValues)
+    VALUES (@TableName, @sql, @paramDefs, @paramValues)
+
+    -- Execute
+    EXEC sp_executesql @sql, @paramDefs, @paramValues
+END
+
+-- ================================================
+-- Stored Procedure: Get Query History for UI Viewer
+-- ================================================
+CREATE PROCEDURE usp_GetQueryAuditLog
+    @TableName NVARCHAR(128) = NULL,
+    @StartDate DATETIME = NULL,
+    @EndDate DATETIME = NULL,
+    @SearchText NVARCHAR(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        AuditID,
+        TableName,
+        ExecutedSql,
+        ParamDefs,
+        ParamValues,
+        ExecutedAt
+    FROM QueryAuditLog
+    WHERE (@TableName IS NULL OR TableName = @TableName)
+      AND (@StartDate IS NULL OR ExecutedAt >= @StartDate)
+      AND (@EndDate IS NULL OR ExecutedAt <= @EndDate)
+      AND (@SearchText IS NULL OR ExecutedSql LIKE '%' + @SearchText + '%' OR ParamValues LIKE '%' + @SearchText + '%')
+    ORDER BY ExecutedAt DESC
+END
+
+-- ================================================
+-- Stored Procedure: Replay Past Query
+-- ================================================
+CREATE PROCEDURE usp_ReplayAuditQuery
+    @AuditID INT
+AS
+BEGIN
+    DECLARE @sql NVARCHAR(MAX), @defs NVARCHAR(MAX), @vals NVARCHAR(MAX)
+
+    SELECT @sql = ExecutedSql, @defs = ParamDefs, @vals = ParamValues
+    FROM QueryAuditLog
+    WHERE AuditID = @AuditID
+
+    EXEC sp_executesql @sql, @defs, @vals
+END
+
