@@ -1,0 +1,204 @@
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+
+-- Helper function to check if the value is numeric
+CREATE OR ALTER FUNCTION dbo.IsNumericOnly (@Value NVARCHAR(MAX))
+RETURNS BIT
+AS
+BEGIN
+    RETURN CASE 
+        WHEN @Value LIKE '%[^0-9.]%' THEN 0 -- Non-numeric characters
+        ELSE 1 -- Numeric
+    END
+END
+GO
+
+-- Helper function to detect if the value is a valid date (DATE or DATETIME)
+CREATE OR ALTER FUNCTION dbo.IsDateFormat (@Value NVARCHAR(MAX))
+RETURNS BIT
+AS
+BEGIN
+    -- Check if the value matches DATE or DATETIME format (YYYY-MM-DD or YYYY-MM-DD HH:MI:SS)
+    RETURN CASE
+        WHEN @Value LIKE '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' 
+            OR @Value LIKE '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]' 
+        THEN 1
+        ELSE 0
+    END
+END
+GO
+
+-- Helper function to split values from a comma-separated string
+CREATE OR ALTER FUNCTION dbo.SplitValues (@List NVARCHAR(MAX), @Delimiter CHAR(1))
+RETURNS @Output TABLE (Item NVARCHAR(MAX))
+AS
+BEGIN
+    DECLARE @Start INT = 1, @End INT
+    WHILE CHARINDEX(@Delimiter, @List, @Start) > 0
+    BEGIN
+        SET @End = CHARINDEX(@Delimiter, @List, @Start)
+        INSERT INTO @Output (Item)
+        SELECT LTRIM(RTRIM(SUBSTRING(@List, @Start, @End - @Start)))
+        SET @Start = @End + 1
+    END
+    INSERT INTO @Output (Item)
+    SELECT LTRIM(RTRIM(SUBSTRING(@List, @Start, LEN(@List) - @Start + 1)))
+    RETURN
+END
+GO
+
+-- Table variable to store the filter conditions
+DECLARE @Filters TABLE (
+    ID INT IDENTITY PRIMARY KEY,
+    ColumnName NVARCHAR(255),
+    Operator NVARCHAR(50),
+    Value1 NVARCHAR(MAX),
+    Value2 NVARCHAR(MAX) NULL,
+    ConditionType NVARCHAR(10) DEFAULT 'AND',
+    BracketLevel INT DEFAULT 0
+)
+
+-- Step 1: Insert conditions from the WHERE clause into the @Filters table
+-- For demonstration purposes, we'll assume the WHERE clause string is in a specific format
+
+DECLARE @WhereClause NVARCHAR(MAX) = 'CreatedDate >= ''2025-05-01'' AND ModifiedDate <= ''2025-05-15 12:00:00'' AND Age = 30 AND Name LIKE ''John%'' AND Country IN (''Germany'', ''USA'', ''Canada'')'
+
+-- Clear the @Filters table before inserting new data
+DELETE FROM @Filters
+
+-- Sample data (manually insert from WHERE clause)
+-- In real scenarios, this would be parsed dynamically from the @WhereClause string
+INSERT INTO @Filters (ColumnName, Operator, Value1, Value2, ConditionType, BracketLevel)
+VALUES
+    ('CreatedDate', '>=', '2025-05-01', NULL, 'AND', 1),
+    ('ModifiedDate', '<=', '2025-05-15 12:00:00', NULL, 'AND', 1),
+    ('Age', '=', '30', NULL, 'AND', 1),
+    ('Name', 'LIKE', 'John%', NULL, 'AND', 1),
+    ('Country', 'IN', 'Germany,USA,Canada', NULL, 'AND', 1)
+
+-- Step 2: Reverse Builder - Reconstruct WHERE clause from @Filters table
+
+DECLARE @DynamicWhere NVARCHAR(MAX) = '' -- Initialize the dynamic WHERE clause
+
+-- Construct the WHERE clause based on the data in the @Filters table
+SELECT @DynamicWhere = @DynamicWhere +
+    -- Add opening bracket when necessary based on the bracket level
+    CASE WHEN BracketLevel > ISNULL(LAG(BracketLevel) OVER (ORDER BY ID), BracketLevel) THEN '(' ELSE '' END +
+    -- Add logical condition (AND/OR) between filters
+    CASE WHEN ID > 1 THEN ' ' + ConditionType + ' ' ELSE '' END +
+    -- Handle the different operators (IS NULL, IN, BETWEEN, etc.)
+    CASE 
+        -- Handle IS NULL and IS NOT NULL
+        WHEN Operator = 'IS NULL' OR Operator = 'IS NOT NULL'
+            THEN ColumnName + ' ' + Operator
+        
+        -- Handle BETWEEN operator (with correct value formatting)
+        WHEN Operator = 'BETWEEN'
+            THEN ColumnName + ' BETWEEN ' + 
+                CASE WHEN dbo.IsNumericOnly(Value1) = 1 THEN Value1 
+                     WHEN dbo.IsDateFormat(Value1) = 1 THEN QUOTENAME(LTRIM(RTRIM(Value1)), '''') -- Quote date values
+                     ELSE QUOTENAME(LTRIM(RTRIM(Value1)), '''') END
+                + ' AND ' +
+                CASE WHEN dbo.IsNumericOnly(Value2) = 1 THEN Value2 
+                     WHEN dbo.IsDateFormat(Value2) = 1 THEN QUOTENAME(LTRIM(RTRIM(Value2)), '''') -- Quote date values
+                     ELSE QUOTENAME(LTRIM(RTRIM(Value2)), '''') END
+        
+        -- Handle IN/NOT IN operator (with value formatting)
+        WHEN Operator IN ('IN', 'NOT IN')
+            THEN 
+            ColumnName + ' ' + Operator + ' (' +
+                STRING_AGG(
+                    CASE 
+                        WHEN dbo.IsNumericOnly(Item) = 1 THEN Item
+                        WHEN dbo.IsDateFormat(Item) = 1 THEN QUOTENAME(Item, '''') -- Quote date values inside IN
+                        ELSE QUOTENAME(Item, '''') -- Quote string values inside IN
+                    END, 
+                ',')
+            WITHIN GROUP (ORDER BY (SELECT NULL)) 
+            FROM dbo.SplitValues(
+                REPLACE(REPLACE(Value1, '(', ''), ')', ''), -- Clean any stray brackets
+                ','
+            )
+            +
+            ')'
+        
+        -- Handle other operators (e.g., '=', '<>', '>', '<', LIKE)
+        ELSE ColumnName + ' ' + Operator + ' ' + 
+            CASE WHEN dbo.IsNumericOnly(Value1) = 1 THEN Value1 
+                 WHEN dbo.IsDateFormat(Value1) = 1 THEN QUOTENAME(LTRIM(RTRIM(Value1)), '''') -- Quote date values
+                 ELSE QUOTENAME(LTRIM(RTRIM(Value1)), '''') END
+    END +
+    -- Add closing bracket when necessary
+    CASE WHEN BracketLevel < ISNULL(LEAD(BracketLevel) OVER (ORDER BY ID), BracketLevel) THEN ')' ELSE '' END
+FROM @Filters
+ORDER BY ID
+
+-- Final Query Construction (SELECT with WHERE clause)
+DECLARE @TableName NVARCHAR(MAX) = 'Customers' -- Your table name
+DECLARE @FinalQuery NVARCHAR(MAX) = 'SELECT * FROM ' + @TableName + ' WHERE ' + @DynamicWhere
+
+-- Output the final query for inspection
+PRINT @FinalQuery
+
+
+
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+
+
+Steps Overview:
+Insert WHERE Clause into @Filters Table:
+
+Manually insert data into the @Filters table from the provided WHERE clause string.
+
+The @Filters table stores the conditions in a structured format, including the column name, operator, value, and condition type.
+
+Reverse Builder:
+
+Reconstructs the dynamic WHERE clause using the data in the @Filters table.
+
+This "reverse builder" dynamically builds the conditions, handling:
+
+Different operators like =, >, <, IN, LIKE, BETWEEN, etc.
+
+Proper formatting for date and numeric values (i.e., quoting strings and dates).
+
+Logical operators (AND, OR) based on the condition type in the @Filters table.
+
+Final Query:
+
+Combines the dynamically constructed WHERE clause with a SELECT * query to create the final query string.
+
+Outputs the final query using PRINT.
+
+
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------
+
+
+
+Sample Output:
+Given the example WHERE clause:
+
+sql
+Copy
+Edit
+CreatedDate >= '2025-05-01' AND ModifiedDate <= '2025-05-15 12:00:00' AND Age = 30 AND Name LIKE 'John%' AND Country IN ('Germany', 'USA', 'Canada')
+The output query will be:
+
+sql
+Copy
+Edit
+SELECT * FROM Customers 
+WHERE CreatedDate >= N'2025-05-01' 
+    AND ModifiedDate <= N'2025-05-15 12:00:00' 
+    AND Age = 30 
+    AND Name LIKE 'John%' 
+    AND Country IN (N'Germany', N'USA', N'Canada')
+Customization:
+Where Clause Parsing: In this example, we manually populate the @Filters table. You can implement a parser to automatically process a given WHERE clause string and insert the conditions into the table.
+
+Table Name: Adjust the @TableName variable to reflect the table you're querying against.
