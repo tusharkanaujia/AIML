@@ -201,4 +201,106 @@ WHERE CreatedDate >= N'2025-05-01'
 Customization:
 Where Clause Parsing: In this example, we manually populate the @Filters table. You can implement a parser to automatically process a given WHERE clause string and insert the conditions into the table.
 
-Table Name: Adjust the @TableName variable to reflect the table you're querying against.
+Table Name: Adjust the @TableName variable to reflect the table you're querying against
+
+
+@@@@@@@@
+
+CREATE OR ALTER PROCEDURE ParseToken
+    @Token NVARCHAR(MAX),
+    @BracketLevel INT,
+    @ConditionType NVARCHAR(10)
+AS
+BEGIN
+    DECLARE @Column NVARCHAR(100), @Operator NVARCHAR(30), @Val1 NVARCHAR(MAX), @Val2 NVARCHAR(MAX)
+
+    -- IS NULL
+    IF CHARINDEX(' IS NULL', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('IS NULL', @Token)-1)))
+        SET @Operator = 'IS NULL'
+    END
+    -- IS NOT NULL
+    ELSE IF CHARINDEX(' IS NOT NULL', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('IS NOT NULL', @Token)-1)))
+        SET @Operator = 'IS NOT NULL'
+    END
+    -- BETWEEN
+    ELSE IF CHARINDEX(' BETWEEN ', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('BETWEEN', @Token)-1)))
+        DECLARE @Temp NVARCHAR(MAX) = SUBSTRING(@Token, CHARINDEX('BETWEEN', @Token) + 7, LEN(@Token))
+        SET @Val1 = LTRIM(RTRIM(LEFT(@Temp, CHARINDEX('AND', @Temp)-1)))
+        SET @Val2 = LTRIM(RTRIM(SUBSTRING(@Temp, CHARINDEX('AND', @Temp)+3, LEN(@Temp))))
+        SET @Operator = 'BETWEEN'
+    END
+    -- NOT IN
+    ELSE IF CHARINDEX(' NOT IN ', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('NOT IN', @Token)-1)))
+        SET @Operator = 'NOT IN'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('NOT IN', @Token) + 6, LEN(@Token))
+    END
+    -- IN
+    ELSE IF CHARINDEX(' IN ', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('IN', @Token)-1)))
+        SET @Operator = 'IN'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('IN', @Token) + 2, LEN(@Token))
+    END
+    -- LIKE
+    ELSE IF CHARINDEX(' LIKE ', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('LIKE', @Token)-1)))
+        SET @Operator = 'LIKE'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('LIKE', @Token) + 4, LEN(@Token))
+    END
+    -- >=
+    ELSE IF CHARINDEX('>=', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('>=', @Token)-1)))
+        SET @Operator = '>='
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('>=', @Token) + 2, LEN(@Token))
+    END
+    -- <=
+    ELSE IF CHARINDEX('<=', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('<=', @Token)-1)))
+        SET @Operator = '<='
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('<=', @Token) + 2, LEN(@Token))
+    END
+    -- >
+    ELSE IF CHARINDEX('>', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('>', @Token)-1)))
+        SET @Operator = '>'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('>', @Token) + 1, LEN(@Token))
+    END
+    -- <
+    ELSE IF CHARINDEX('<', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('<', @Token)-1)))
+        SET @Operator = '<'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('<', @Token) + 1, LEN(@Token))
+    END
+    -- <>
+    ELSE IF CHARINDEX('<>', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('<>', @Token)-1)))
+        SET @Operator = '<>'
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('<>', @Token) + 2, LEN(@Token))
+    END
+    -- =
+    ELSE IF CHARINDEX('=', @Token) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(LEFT(@Token, CHARINDEX('=', @Token)-1)))
+        SET @Operator = '='
+        SET @Val1 = SUBSTRING(@Token, CHARINDEX('=', @Token) + 1, LEN(@Token))
+    END
+
+    -- Insert into Filters
+    INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2)
+    VALUES (@BracketLevel, @ConditionType, @Column, @Operator, @Val1, @Val2)
+END
+
