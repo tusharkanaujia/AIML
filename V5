@@ -1,0 +1,317 @@
+CREATE TYPE dbo.FilterTableType AS TABLE (
+    ID INT IDENTITY(1,1),
+    BracketLevel INT,
+    ConditionType NVARCHAR(10),
+    ColumnName NVARCHAR(255),
+    Operator NVARCHAR(20),
+    Value1 NVARCHAR(MAX),
+    Value2 NVARCHAR(MAX)
+)
+
+CREATE OR ALTER FUNCTION dbo.fn_QuoteValue(@val NVARCHAR(MAX))
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN CASE 
+        WHEN TRY_CAST(@val AS FLOAT) IS NULL AND LEFT(@val,1) <> '''' 
+            THEN '''' + REPLACE(@val, '''', '''''') + ''''
+        ELSE @val 
+    END
+END
+
+
+CREATE OR ALTER PROCEDURE dbo.ParseWhereClauseToFilterTable
+    @TableName SYSNAME,
+    @WhereClause NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Filters TABLE (
+        ID INT IDENTITY(1,1),
+        BracketLevel INT,
+        ConditionType NVARCHAR(10),
+        ColumnName NVARCHAR(255),
+        Operator NVARCHAR(20),
+        Value1 NVARCHAR(MAX),
+        Value2 NVARCHAR(MAX)
+    )
+
+    DECLARE @BracketLevel INT = 0
+    DECLARE @Token NVARCHAR(MAX)
+    DECLARE @Pos INT = 1
+    DECLARE @NextPos INT
+    DECLARE @Length INT = LEN(@WhereClause)
+    DECLARE @Cond NVARCHAR(10)
+
+    DECLARE @Tokens TABLE (Seq INT IDENTITY, Token NVARCHAR(MAX))
+
+    -- Tokenize the where clause
+    WHILE @Pos <= @Length
+    BEGIN
+        DECLARE @Char CHAR(1) = SUBSTRING(@WhereClause, @Pos, 1)
+        IF @Char IN ('(', ')')
+        BEGIN
+            INSERT INTO @Tokens(Token) VALUES (@Char)
+            SET @Pos += 1
+        END
+        ELSE
+        BEGIN
+            SET @NextPos = CHARINDEX(' ', @WhereClause + ' ', @Pos)
+            IF @NextPos = 0 SET @NextPos = @Length + 1
+            SET @Token = TRIM(SUBSTRING(@WhereClause, @Pos, @NextPos - @Pos))
+            INSERT INTO @Tokens(Token) VALUES (@Token)
+            SET @Pos = @NextPos + 1
+        END
+    END
+
+    DECLARE @i INT = 1, @Max INT
+    SELECT @Max = MAX(Seq) FROM @Tokens
+
+    WHILE @i <= @Max
+    BEGIN
+        DECLARE @Tok NVARCHAR(MAX), @Next1 NVARCHAR(MAX), @Next2 NVARCHAR(MAX)
+        SELECT @Tok = Token FROM @Tokens WHERE Seq = @i
+
+        IF @Tok = '(' BEGIN SET @BracketLevel += 1; SET @i += 1; CONTINUE END
+        IF @Tok = ')' BEGIN SET @BracketLevel -= 1; SET @i += 1; CONTINUE END
+        IF UPPER(@Tok) IN ('AND', 'OR') BEGIN SET @Cond = UPPER(@Tok); SET @i += 1; CONTINUE END
+
+        SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 1
+        SELECT @Next2 = Token FROM @Tokens WHERE Seq = @i + 2
+
+        IF @Next1 IS NULL OR @Next2 IS NULL BREAK
+
+        DECLARE @Col NVARCHAR(255) = @Tok
+        DECLARE @Op NVARCHAR(20) = UPPER(@Next1)
+
+        IF @Op = 'NOT'
+        BEGIN
+            SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 2
+            IF UPPER(@Next1) = 'IN'
+            BEGIN
+                SET @Op = 'NOT IN'
+                SET @i += 1
+            END
+        END
+
+        IF @Op IN ('IN', 'NOT IN')
+        BEGIN
+            IF @Next2 <> '(' BREAK
+
+            DECLARE @InList NVARCHAR(MAX) = ''
+            SET @i += 3
+            WHILE @i <= @Max
+            BEGIN
+                SELECT @Tok = Token FROM @Tokens WHERE Seq = @i
+                IF @Tok = ')' BREAK
+                IF @Tok <> ',' 
+                    SET @InList += CASE WHEN LEN(@InList) > 0 THEN ',' ELSE '' END + @Tok
+                SET @i += 1
+            END
+            SET @i += 1
+
+            DECLARE @Val NVARCHAR(MAX)
+            DECLARE in_cursor CURSOR FOR 
+                SELECT TRIM(value) FROM STRING_SPLIT(@InList, ',')
+
+            OPEN in_cursor
+            FETCH NEXT FROM in_cursor INTO @Val
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+                VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @Val)
+                FETCH NEXT FROM in_cursor INTO @Val
+            END
+            CLOSE in_cursor
+            DEALLOCATE in_cursor
+
+            SET @Cond = NULL
+            CONTINUE
+        END
+        ELSE
+        BEGIN
+            INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+            VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @Next2)
+            SET @i += 3
+            SET @Cond = NULL
+            CONTINUE
+        END
+    END
+
+    -- Save to a permanent table for use by builder
+    DELETE FROM dbo.FilterStorage WHERE TableName = @TableName
+    INSERT INTO dbo.FilterStorage (TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2)
+    SELECT @TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2 FROM @Filters
+END
+
+CREATE TABLE dbo.FilterStorage (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    TableName SYSNAME,
+    BracketLevel INT,
+    ConditionType NVARCHAR(10),
+    ColumnName NVARCHAR(255),
+    Operator NVARCHAR(20),
+    Value1 NVARCHAR(MAX),
+    Value2 NVARCHAR(MAX)
+)
+
+CREATE OR ALTER PROCEDURE dbo.BuildAndExecuteDynamicSQL
+    @TableName SYSNAME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Sql NVARCHAR(MAX) = ''
+    DECLARE @PrevLevel INT = 0
+    DECLARE @IsFirst BIT = 1
+
+    DECLARE cur CURSOR FOR
+    SELECT ID, BracketLevel, ConditionType, ColumnName, Operator, Value1
+    FROM (
+        SELECT ID, BracketLevel, ConditionType, ColumnName, Operator, Value1
+        FROM dbo.FilterStorage WHERE TableName = @TableName AND Operator NOT IN ('IN','NOT IN')
+        UNION ALL
+        SELECT MIN(ID), BracketLevel, ConditionType, ColumnName, Operator, NULL
+        FROM dbo.FilterStorage WHERE TableName = @TableName AND Operator IN ('IN','NOT IN')
+        GROUP BY BracketLevel, ConditionType, ColumnName, Operator
+    ) AS Combined
+    ORDER BY ID
+
+    DECLARE @ID INT, @Level INT, @Type NVARCHAR(10), @Col NVARCHAR(255), @Op NVARCHAR(20), @Val NVARCHAR(MAX)
+
+    OPEN cur
+    FETCH NEXT FROM cur INTO @ID, @Level, @Type, @Col, @Op, @Val
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF @Level > @PrevLevel SET @Sql += REPLICATE('(', @Level - @PrevLevel)
+        IF @IsFirst = 0 SET @Sql += ' ' + @Type + ' ' ELSE SET @IsFirst = 0
+
+        DECLARE @Line NVARCHAR(MAX)
+
+        IF @Op IN ('IN', 'NOT IN')
+        BEGIN
+            DECLARE @InList NVARCHAR(MAX) = ''
+            SELECT @InList = STRING_AGG(dbo.fn_QuoteValue(Value1), ', ')
+            FROM dbo.FilterStorage
+            WHERE TableName = @TableName AND ColumnName = @Col AND Operator = @Op AND BracketLevel = @Level AND ConditionType = @Type
+
+            SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' (' + @InList + ')'
+        END
+        ELSE
+        BEGIN
+            SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' ' + dbo.fn_QuoteValue(@Val)
+        END
+
+        SET @Sql += @Line
+
+        IF @Level < @PrevLevel SET @Sql += REPLICATE(')', @PrevLevel - @Level)
+
+        SET @PrevLevel = @Level
+        FETCH NEXT FROM cur INTO @ID, @Level, @Type, @Col, @Op, @Val
+    END
+
+    CLOSE cur
+    DEALLOCATE cur
+
+    IF @PrevLevel > 0 SET @Sql += REPLICATE(')', @PrevLevel)
+
+    SET @Sql = 'SELECT * FROM ' + QUOTENAME(@TableName) + ' WHERE ' + @Sql
+
+    EXEC sp_executesql @Sql
+END
+
+
+
+-- Step 1: Parse the WHERE clause into filter table
+EXEC dbo.ParseWhereClauseToFilterTable 
+    @TableName = 'Customers',
+    @WhereClause = 'CustomerID IN (1,2,3) AND Country = ''Germany'' AND (PostalCode LIKE ''1%'' OR City = ''Berlin'')'
+
+-- Step 2: Build and execute dynamic SQL
+EXEC dbo.BuildAndExecuteDynamicSQL @TableName = 'Customers'
+
+
+
+
+
+CREATE OR ALTER PROCEDURE dbo.BuildAndExecuteDynamicSQL
+    @TableName SYSNAME,
+    @ReturnSQL BIT = 1,          -- 1 = return only, 0 = execute
+    @OutSQL NVARCHAR(MAX) OUTPUT -- returns generated SQL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Sql NVARCHAR(MAX) = ''
+    DECLARE @PrevLevel INT = 0
+    DECLARE @IsFirst BIT = 1
+
+    DECLARE cur CURSOR FOR
+    SELECT ID, BracketLevel, ConditionType, ColumnName, Operator, Value1
+    FROM (
+        SELECT ID, BracketLevel, ConditionType, ColumnName, Operator, Value1
+        FROM dbo.FilterStorage WHERE TableName = @TableName AND Operator NOT IN ('IN','NOT IN')
+        UNION ALL
+        SELECT MIN(ID), BracketLevel, ConditionType, ColumnName, Operator, NULL
+        FROM dbo.FilterStorage WHERE TableName = @TableName AND Operator IN ('IN','NOT IN')
+        GROUP BY BracketLevel, ConditionType, ColumnName, Operator
+    ) AS Combined
+    ORDER BY ID
+
+    DECLARE @ID INT, @Level INT, @Type NVARCHAR(10), @Col NVARCHAR(255), @Op NVARCHAR(20), @Val NVARCHAR(MAX)
+
+    OPEN cur
+    FETCH NEXT FROM cur INTO @ID, @Level, @Type, @Col, @Op, @Val
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF @Level > @PrevLevel SET @Sql += REPLICATE('(', @Level - @PrevLevel)
+        IF @IsFirst = 0 SET @Sql += ' ' + @Type + ' ' ELSE SET @IsFirst = 0
+
+        DECLARE @Line NVARCHAR(MAX)
+
+        IF @Op IN ('IN', 'NOT IN')
+        BEGIN
+            DECLARE @InList NVARCHAR(MAX) = ''
+            SELECT @InList = STRING_AGG(dbo.fn_QuoteValue(Value1), ', ')
+            FROM dbo.FilterStorage
+            WHERE TableName = @TableName AND ColumnName = @Col AND Operator = @Op AND BracketLevel = @Level AND ConditionType = @Type
+
+            SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' (' + @InList + ')'
+        END
+        ELSE
+        BEGIN
+            SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' ' + dbo.fn_QuoteValue(@Val)
+        END
+
+        SET @Sql += @Line
+
+        IF @Level < @PrevLevel SET @Sql += REPLICATE(')', @PrevLevel - @Level)
+
+        SET @PrevLevel = @Level
+        FETCH NEXT FROM cur INTO @ID, @Level, @Type, @Col, @Op, @Val
+    END
+
+    CLOSE cur
+    DEALLOCATE cur
+
+    IF @PrevLevel > 0 SET @Sql += REPLICATE(')', @PrevLevel)
+
+    SET @OutSQL = 'SELECT * FROM ' + QUOTENAME(@TableName) + ' WHERE ' + @Sql
+
+    IF @ReturnSQL = 0
+        EXEC sp_executesql @OutSQL
+END
+
+
+
+DECLARE @sql NVARCHAR(MAX)
+EXEC dbo.BuildAndExecuteDynamicSQL @TableName = 'Customers', @ReturnSQL = 1, @OutSQL = @sql OUTPUT
+PRINT @sql
+
+
+DECLARE @sql NVARCHAR(MAX)
+EXEC dbo.BuildAndExecuteDynamicSQL @TableName = 'Customers', @ReturnSQL = 0, @OutSQL = @sql OUTPUT
+
