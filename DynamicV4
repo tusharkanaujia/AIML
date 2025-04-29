@@ -304,3 +304,235 @@ BEGIN
     VALUES (@BracketLevel, @ConditionType, @Column, @Operator, @Val1, @Val2)
 END
 
+
+
+
+
+@@@@@@
+
+
+CREATE TYPE dbo.FilterTableType AS TABLE (
+    ID INT IDENTITY(1,1),
+    BracketLevel INT,
+    ConditionType NVARCHAR(10),
+    ColumnName NVARCHAR(255),
+    Operator NVARCHAR(20),
+    Value1 NVARCHAR(MAX),
+    Value2 NVARCHAR(MAX) NULL
+)
+
+CREATE OR ALTER PROCEDURE dbo.ParseWhereClauseToFilters
+    @WhereClause NVARCHAR(MAX),
+    @Filters dbo.FilterTableType READONLY OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @BracketLevel INT = 0
+    DECLARE @Token NVARCHAR(MAX)
+    DECLARE @Pos INT = 1
+    DECLARE @NextPos INT
+    DECLARE @Length INT = LEN(@WhereClause)
+    DECLARE @Delimiters NVARCHAR(20) = ' ()'
+
+    DECLARE @Tokens TABLE (Seq INT IDENTITY, Token NVARCHAR(MAX))
+
+    -- Tokenizer: splits based on spaces but keeps brackets and operators intact
+    WHILE @Pos <= @Length
+    BEGIN
+        SET @NextPos = PATINDEX('%[^ ]%', SUBSTRING(@WhereClause, @Pos, 1))
+        IF @NextPos = 0 BREAK
+
+        DECLARE @Char CHAR(1) = SUBSTRING(@WhereClause, @Pos, 1)
+
+        IF @Char IN ('(', ')')
+        BEGIN
+            INSERT INTO @Tokens(Token) VALUES (@Char)
+            SET @Pos += 1
+        END
+        ELSE
+        BEGIN
+            DECLARE @End INT = CHARINDEX(' ', @WhereClause + ' ', @Pos)
+            IF @End = 0 SET @End = @Length + 1
+            SET @Token = RTRIM(LTRIM(SUBSTRING(@WhereClause, @Pos, @End - @Pos)))
+            INSERT INTO @Tokens(Token) VALUES (@Token)
+            SET @Pos = @End + 1
+        END
+    END
+
+    -- Now parse the tokens into the @Filters table
+    DECLARE 
+        @Col NVARCHAR(255), @Op NVARCHAR(20),
+        @Val NVARCHAR(MAX), @Cond NVARCHAR(10),
+        @i INT = 1, @Max INT, @CurrentToken NVARCHAR(MAX)
+
+    SELECT @Max = MAX(Seq) FROM @Tokens
+
+    DECLARE @Working TABLE (BracketLevel INT, ConditionType NVARCHAR(10), ColumnName NVARCHAR(255), Operator NVARCHAR(20), Value1 NVARCHAR(MAX), Value2 NVARCHAR(MAX))
+
+    WHILE @i <= @Max
+    BEGIN
+        SELECT @CurrentToken = Token FROM @Tokens WHERE Seq = @i
+
+        IF @CurrentToken = '('
+        BEGIN
+            SET @BracketLevel += 1
+            SET @i += 1
+            CONTINUE
+        END
+        ELSE IF @CurrentToken = ')'
+        BEGIN
+            SET @BracketLevel -= 1
+            SET @i += 1
+            CONTINUE
+        END
+        ELSE IF UPPER(@CurrentToken) IN ('AND', 'OR')
+        BEGIN
+            SET @Cond = UPPER(@CurrentToken)
+            SET @i += 1
+            CONTINUE
+        END
+
+        -- Assume pattern: Column Operator Value
+        DECLARE @Next1 NVARCHAR(MAX), @Next2 NVARCHAR(MAX)
+        SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 1
+        SELECT @Next2 = Token FROM @Tokens WHERE Seq = @i + 2
+
+        IF @Next1 IS NULL OR @Next2 IS NULL BREAK
+
+        SET @Col = @CurrentToken
+        SET @Op = UPPER(@Next1)
+
+        -- Handle IN (...)
+        IF @Op = 'IN' OR @Op = 'NOT'
+        BEGIN
+            IF @Op = 'NOT'
+            BEGIN
+                -- Expect 'NOT IN'
+                SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 2
+                IF @Next1 <> 'IN' BREAK
+                SET @Op = 'NOT IN'
+                SET @i += 1 -- Advance extra
+            END
+
+            -- Expect next token to be '('
+            SELECT @Next2 = Token FROM @Tokens WHERE Seq = @i + 2
+            IF @Next2 <> '(' BREAK
+
+            DECLARE @INList NVARCHAR(MAX) = ''
+            SET @i += 3 -- Move past IN (
+
+            WHILE @i <= @Max
+            BEGIN
+                SELECT @CurrentToken = Token FROM @Tokens WHERE Seq = @i
+                IF @CurrentToken = ')' BREAK
+                IF @CurrentToken <> ',' SET @INList += CASE WHEN LEN(@INList) > 0 THEN ',' ELSE '' END + @CurrentToken
+                SET @i += 1
+            END
+            SET @i += 1 -- Move past ')'
+
+            INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+            VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @INList)
+
+            SET @Cond = NULL
+            CONTINUE
+        END
+        ELSE
+        BEGIN
+            -- Standard pattern: Column Operator Value
+            SET @Val = @Next2
+            SET @i += 3
+
+            INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+            VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @Val)
+
+            SET @Cond = NULL
+            CONTINUE
+        END
+    END
+END
+
+DECLARE @FilterResult dbo.FilterTableType
+
+EXEC dbo.ParseWhereClauseToFilters 
+    @WhereClause = '((CustomerID IN (1,2,3) AND Country = ''USA'') OR (PostalCode LIKE ''1%''))', 
+    @Filters = @FilterResult OUTPUT
+
+-- View the parsed results
+SELECT * FROM @FilterResult
+
+
+
+DECLARE @Sql NVARCHAR(MAX) = ''
+DECLARE @PrevLevel INT = 0
+DECLARE @CurrentLevel INT
+DECLARE @Condition NVARCHAR(MAX)
+DECLARE @Line NVARCHAR(MAX)
+DECLARE @IsFirst BIT = 1
+
+-- Cursor to iterate over filters
+DECLARE cur CURSOR FOR
+SELECT BracketLevel, ConditionType, ColumnName, Operator, Value1
+FROM @FilterResult
+ORDER BY ID
+
+OPEN cur
+FETCH NEXT FROM cur INTO @CurrentLevel, @Condition, @Col, @Op, @Val
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Handle brackets (open)
+    IF @CurrentLevel > @PrevLevel
+        SET @Sql += REPLICATE('(', @CurrentLevel - @PrevLevel)
+
+    -- Add AND/OR (skip for first condition)
+    IF @IsFirst = 0
+        SET @Sql += ' ' + @Condition + ' '
+    ELSE
+        SET @IsFirst = 0
+
+    -- Build the condition expression
+    IF @Op IN ('IN', 'NOT IN')
+    BEGIN
+        -- Break values into quoted list
+        DECLARE @InList NVARCHAR(MAX) = ''
+        SELECT @InList = STRING_AGG(
+            CASE 
+                WHEN TRY_CAST(value AS FLOAT) IS NULL THEN '''' + TRIM(value) + ''''
+                ELSE TRIM(value)
+            END, ',')
+        FROM STRING_SPLIT(@Val, ',')
+
+        SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' (' + @InList + ')'
+    END
+    ELSE
+    BEGIN
+        SET @Line = QUOTENAME(@Col) + ' ' + @Op + ' ' + 
+                    CASE 
+                        WHEN TRY_CAST(@Val AS FLOAT) IS NULL AND LEFT(@Val,1) <> '''' THEN '''' + @Val + ''''
+                        ELSE @Val 
+                    END
+    END
+
+    SET @Sql += @Line
+
+    -- Handle brackets (close)
+    IF @CurrentLevel < @PrevLevel
+        SET @Sql += REPLICATE(')', @PrevLevel - @CurrentLevel)
+
+    SET @PrevLevel = @CurrentLevel
+    FETCH NEXT FROM cur INTO @CurrentLevel, @Condition, @Col, @Op, @Val
+END
+
+CLOSE cur
+DEALLOCATE cur
+
+-- Close remaining brackets if any
+IF @PrevLevel > 0
+    SET @Sql += REPLICATE(')', @PrevLevel)
+
+-- Final result
+SELECT 'SELECT * FROM YourTable WHERE ' + @Sql AS DynamicSQL
+
+SELECT * FROM YourTable WHERE (([CustomerID] IN (1,2,3) AND [Country] = 'USA') OR [PostalCode] LIKE '1%')
+
