@@ -1,0 +1,257 @@
+-- 1. Filter Table
+CREATE TABLE dbo.FilterStorage (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    TableName SYSNAME,
+    BracketLevel INT,
+    ConditionType VARCHAR(10), -- AND/OR
+    ColumnName SYSNAME,
+    Operator VARCHAR(20),
+    Value1 NVARCHAR(MAX),
+    Value2 NVARCHAR(MAX),
+    ValueType VARCHAR(20) -- 'int', 'date', 'string'
+);
+GO
+
+-- 2. Execution Log Table
+CREATE TABLE dbo.FilterExecutionLog (
+    LogID INT IDENTITY(1,1) PRIMARY KEY,
+    TableName SYSNAME,
+    ExecutedOn DATETIME DEFAULT GETDATE(),
+    ExecutedSQL NVARCHAR(MAX),
+    Success BIT,
+    Message NVARCHAR(MAX)
+);
+GO
+
+-- 3. Helper: Auto-quote values
+CREATE OR ALTER FUNCTION dbo.fn_QuoteValue (@val NVARCHAR(MAX), @valType VARCHAR(20))
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    IF @val IS NULL RETURN 'NULL'
+    IF @valType = 'int' RETURN @val
+    IF @valType = 'date' RETURN '''' + CONVERT(NVARCHAR(30), TRY_CAST(@val AS DATE), 120) + ''''
+    RETURN '''' + REPLACE(@val, '''', '''''') + ''''
+END
+GO
+
+-- 4. Parser Procedure
+CREATE OR ALTER PROCEDURE dbo.ParseWhereClauseToFilterTable
+    @TableName SYSNAME,
+    @WhereClause NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.FilterStorage WHERE TableName = @TableName;
+
+    DECLARE @sql NVARCHAR(MAX) = @WhereClause,
+            @pos INT = 1, @len INT = LEN(@sql), @level INT = 0, @ID INT = 1,
+            @token NVARCHAR(MAX), @buffer NVARCHAR(MAX) = '',
+            @char NCHAR(1), @inQuotes BIT = 0;
+
+    DECLARE @Tokens TABLE (
+        TokenOrder INT IDENTITY(1,1),
+        Token NVARCHAR(MAX),
+        BracketLevel INT,
+        ConditionType VARCHAR(10)
+    );
+
+    -- Tokenize manually
+    WHILE @pos <= @len
+    BEGIN
+        SET @char = SUBSTRING(@sql, @pos, 1);
+
+        IF @char = '''' 
+        BEGIN
+            SET @buffer += @char;
+            SET @inQuotes = ~@inQuotes;
+        END
+        ELSE IF @inQuotes = 1 OR @char NOT IN ('(', ')')
+        BEGIN
+            SET @buffer += @char;
+        END
+        ELSE
+        BEGIN
+            IF LTRIM(RTRIM(@buffer)) <> ''
+                INSERT INTO @Tokens (Token, BracketLevel) VALUES (LTRIM(RTRIM(@buffer)), @level);
+
+            IF @char = '(' SET @level += 1;
+            IF @char = ')' SET @level -= 1;
+
+            SET @buffer = '';
+        END
+        SET @pos += 1;
+    END
+    IF LTRIM(RTRIM(@buffer)) <> ''
+        INSERT INTO @Tokens (Token, BracketLevel) VALUES (LTRIM(RTRIM(@buffer)), @level);
+
+    -- Parse expressions
+    DECLARE @tok NVARCHAR(MAX), @b INT, @cond VARCHAR(10) = 'AND';
+
+    DECLARE tok CURSOR FOR SELECT Token, BracketLevel FROM @Tokens;
+    OPEN tok;
+    FETCH NEXT FROM tok INTO @tok, @b;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @tok = LTRIM(RTRIM(@tok));
+        IF UPPER(@tok) = 'AND' OR UPPER(@tok) = 'OR'
+        BEGIN
+            SET @cond = UPPER(@tok);
+        END
+        ELSE
+        BEGIN
+            DECLARE @col SYSNAME, @op VARCHAR(20), @val1 NVARCHAR(MAX), @val2 NVARCHAR(MAX), @vtype VARCHAR(20) = 'string';
+            DECLARE @i INT;
+
+            SELECT TOP 1 @op = o FROM (VALUES ('NOT IN'), ('IN'), ('BETWEEN'), ('LIKE'), ('>='), ('<='), ('<>'), ('='), ('>'), ('<')) ops(o)
+            WHERE @tok LIKE '% ' + o + ' %' ORDER BY LEN(o) DESC;
+
+            IF @op IS NOT NULL
+            BEGIN
+                SET @i = CHARINDEX(@op, @tok);
+                SET @col = LTRIM(RTRIM(LEFT(@tok, @i - 1)));
+                SET @val1 = LTRIM(RTRIM(SUBSTRING(@tok, @i + LEN(@op), LEN(@tok))));
+
+                IF @op IN ('IN', 'NOT IN')
+                BEGIN
+                    SET @val1 = REPLACE(REPLACE(@val1, '(', ''), ')', '');
+                    DECLARE @inVal NVARCHAR(MAX), @split TABLE (val NVARCHAR(MAX));
+                    INSERT INTO @split SELECT TRIM(value) FROM STRING_SPLIT(@val1, ',');
+
+                    DECLARE c CURSOR FOR SELECT val FROM @split;
+                    OPEN c; FETCH NEXT FROM c INTO @inVal;
+                    WHILE @@FETCH_STATUS = 0
+                    BEGIN
+                        SET @inVal = TRIM(REPLACE(@inVal, '''', ''));
+                        SET @vtype = CASE WHEN ISNUMERIC(@inVal) = 1 THEN 'int' 
+                                          WHEN ISDATE(@inVal) = 1 THEN 'date' ELSE 'string' END;
+
+                        INSERT INTO dbo.FilterStorage(TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, ValueType)
+                        VALUES (@TableName, @b, @cond, @col, @op, @inVal, @vtype);
+                        FETCH NEXT FROM c INTO @inVal;
+                    END
+                    CLOSE c; DEALLOCATE c;
+                END
+                ELSE IF @op = 'BETWEEN'
+                BEGIN
+                    SET @val1 = REPLACE(@val1, '''', '');
+                    SET @val2 = SUBSTRING(@val1, CHARINDEX('AND', @val1)+3, LEN(@val1));
+                    SET @val1 = LEFT(@val1, CHARINDEX('AND', @val1)-1);
+                    SET @vtype = CASE WHEN ISNUMERIC(@val1) = 1 THEN 'int' 
+                                      WHEN ISDATE(@val1) = 1 THEN 'date' ELSE 'string' END;
+
+                    INSERT INTO dbo.FilterStorage(TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2, ValueType)
+                    VALUES (@TableName, @b, @cond, @col, 'BETWEEN', TRIM(@val1), TRIM(@val2), @vtype);
+                END
+                ELSE
+                BEGIN
+                    SET @val1 = TRIM(REPLACE(@val1, '''', ''));
+                    SET @vtype = CASE WHEN ISNUMERIC(@val1) = 1 THEN 'int' 
+                                      WHEN ISDATE(@val1) = 1 THEN 'date' ELSE 'string' END;
+
+                    INSERT INTO dbo.FilterStorage(TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, ValueType)
+                    VALUES (@TableName, @b, @cond, @col, @op, @val1, @vtype);
+                END
+            END
+        END
+        FETCH NEXT FROM tok INTO @tok, @b;
+    END
+    CLOSE tok; DEALLOCATE tok;
+END
+GO
+
+-- 5. Builder + Executor
+CREATE OR ALTER PROCEDURE dbo.BuildAndExecuteDynamicSQL
+    @TableName SYSNAME,
+    @ResultTable SYSNAME = NULL, -- e.g., '##ResultOutput'
+    @ReturnSQL BIT = 0,
+    @OutSQL NVARCHAR(MAX) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @SQL NVARCHAR(MAX) = '', @prevLevel INT = 0, @first BIT = 1;
+
+    DECLARE cur CURSOR FOR
+    SELECT BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2, ValueType
+    FROM dbo.FilterStorage
+    WHERE TableName = @TableName
+    ORDER BY ID;
+
+    DECLARE @lvl INT, @cond VARCHAR(10), @col SYSNAME, @op VARCHAR(20), @v1 NVARCHAR(MAX), @v2 NVARCHAR(MAX), @type VARCHAR(20);
+    OPEN cur; FETCH NEXT FROM cur INTO @lvl, @cond, @col, @op, @v1, @v2, @type;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF @first = 0 SET @SQL += ' ' + @cond + ' ';
+        ELSE SET @first = 0;
+
+        IF @lvl > @prevLevel SET @SQL += REPLICATE('(', @lvl - @prevLevel);
+        IF @lvl < @prevLevel SET @SQL += REPLICATE(')', @prevLevel - @lvl);
+        SET @prevLevel = @lvl;
+
+        IF @op IN ('IN', 'NOT IN')
+        BEGIN
+            DECLARE @vals NVARCHAR(MAX);
+            SELECT @vals = STRING_AGG(dbo.fn_QuoteValue(Value1, ValueType), ', ')
+            FROM dbo.FilterStorage WHERE TableName = @TableName AND ColumnName = @col AND Operator = @op;
+            SET @SQL += QUOTENAME(@col) + ' ' + @op + ' (' + @vals + ')';
+        END
+        ELSE IF @op = 'BETWEEN'
+        BEGIN
+            SET @SQL += QUOTENAME(@col) + ' BETWEEN ' + dbo.fn_QuoteValue(@v1, @type) + ' AND ' + dbo.fn_QuoteValue(@v2, @type);
+        END
+        ELSE
+        BEGIN
+            SET @SQL += QUOTENAME(@col) + ' ' + @op + ' ' + dbo.fn_QuoteValue(@v1, @type);
+        END
+
+        FETCH NEXT FROM cur INTO @lvl, @cond, @col, @op, @v1, @v2, @type;
+    END
+    CLOSE cur; DEALLOCATE cur;
+
+    IF @prevLevel > 0 SET @SQL += REPLICATE(')', @prevLevel);
+
+    SET @OutSQL = 'SELECT * FROM ' + QUOTENAME(@TableName) + ' WHERE ' + @SQL;
+
+    IF @ReturnSQL = 1 RETURN;
+
+    BEGIN TRY
+        IF @ResultTable IS NOT NULL
+        BEGIN
+            DECLARE @execSql NVARCHAR(MAX) = 'SELECT * INTO ' + @ResultTable + ' FROM ' + QUOTENAME(@TableName) + ' WHERE ' + @SQL;
+            EXEC sp_executesql @execSql;
+        END
+        ELSE
+        BEGIN
+            EXEC sp_executesql @OutSQL;
+        END
+
+        INSERT INTO dbo.FilterExecutionLog(TableName, ExecutedSQL, Success)
+        VALUES (@TableName, @OutSQL, 1);
+    END TRY
+    BEGIN CATCH
+        INSERT INTO dbo.FilterExecutionLog(TableName, ExecutedSQL, Success, Message)
+        VALUES (@TableName, @OutSQL, 0, ERROR_MESSAGE());
+    END CATCH
+END
+GO
+
+
+
+EXEC dbo.ParseWhereClauseToFilterTable 
+    @TableName = 'Customers', 
+    @WhereClause = '(Country = ''Germany'' AND Age BETWEEN 25 AND 40) OR CustomerID IN (1, 2, 3)';
+
+DECLARE @sql NVARCHAR(MAX);
+EXEC dbo.BuildAndExecuteDynamicSQL 
+    @TableName = 'Customers', 
+    @ResultTable = '##CustomerResult',
+    @ReturnSQL = 0,
+    @OutSQL = @sql OUTPUT;
+
+-- Check results
+SELECT * FROM ##CustomerResult;
+-- View execution log
+SELECT * FROM dbo.FilterExecutionLog;
+
