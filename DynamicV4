@@ -1,4 +1,145 @@
----------------------------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ParseWhereClauseToFilters
+    @WhereClause NVARCHAR(MAX),
+    @Filters dbo.FilterTableType READONLY OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @BracketLevel INT = 0
+    DECLARE @Token NVARCHAR(MAX)
+    DECLARE @Pos INT = 1
+    DECLARE @NextPos INT
+    DECLARE @Length INT = LEN(@WhereClause)
+
+    DECLARE @Tokens TABLE (Seq INT IDENTITY, Token NVARCHAR(MAX))
+
+    -- Basic tokenizer (split by spaces and brackets)
+    WHILE @Pos <= @Length
+    BEGIN
+        DECLARE @Char CHAR(1) = SUBSTRING(@WhereClause, @Pos, 1)
+
+        IF @Char IN ('(', ')')
+        BEGIN
+            INSERT INTO @Tokens(Token) VALUES (@Char)
+            SET @Pos += 1
+        END
+        ELSE
+        BEGIN
+            SET @NextPos = CHARINDEX(' ', @WhereClause + ' ', @Pos)
+            IF @NextPos = 0 SET @NextPos = @Length + 1
+            SET @Token = TRIM(SUBSTRING(@WhereClause, @Pos, @NextPos - @Pos))
+            INSERT INTO @Tokens(Token) VALUES (@Token)
+            SET @Pos = @NextPos + 1
+        END
+    END
+
+    DECLARE @Col NVARCHAR(255), @Op NVARCHAR(20), @Val NVARCHAR(MAX), @Cond NVARCHAR(10)
+    DECLARE @i INT = 1, @Max INT, @CurrentToken NVARCHAR(MAX)
+
+    SELECT @Max = MAX(Seq) FROM @Tokens
+
+    WHILE @i <= @Max
+    BEGIN
+        SELECT @CurrentToken = Token FROM @Tokens WHERE Seq = @i
+
+        IF @CurrentToken = '('
+        BEGIN
+            SET @BracketLevel += 1
+            SET @i += 1
+            CONTINUE
+        END
+        ELSE IF @CurrentToken = ')'
+        BEGIN
+            SET @BracketLevel -= 1
+            SET @i += 1
+            CONTINUE
+        END
+        ELSE IF UPPER(@CurrentToken) IN ('AND', 'OR')
+        BEGIN
+            SET @Cond = UPPER(@CurrentToken)
+            SET @i += 1
+            CONTINUE
+        END
+
+        -- Assume pattern: Column Operator Value
+        DECLARE @Next1 NVARCHAR(MAX), @Next2 NVARCHAR(MAX)
+        SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 1
+        SELECT @Next2 = Token FROM @Tokens WHERE Seq = @i + 2
+
+        IF @Next1 IS NULL OR @Next2 IS NULL BREAK
+
+        SET @Col = @CurrentToken
+        SET @Op = UPPER(@Next1)
+
+        -- Handle IN and NOT IN
+        IF @Op = 'IN' OR @Op = 'NOT'
+        BEGIN
+            IF @Op = 'NOT'
+            BEGIN
+                SELECT @Next1 = Token FROM @Tokens WHERE Seq = @i + 2
+                IF UPPER(@Next1) = 'IN'
+                BEGIN
+                    SET @Op = 'NOT IN'
+                    SET @i += 1
+                END
+                ELSE
+                    BREAK
+            END
+
+            -- Expect next token to be '('
+            SELECT @Next2 = Token FROM @Tokens WHERE Seq = @i + 2
+            IF @Next2 <> '(' BREAK
+
+            DECLARE @INList NVARCHAR(MAX) = ''
+            SET @i += 3
+
+            WHILE @i <= @Max
+            BEGIN
+                SELECT @CurrentToken = Token FROM @Tokens WHERE Seq = @i
+                IF @CurrentToken = ')' BREAK
+                IF @CurrentToken <> ',' 
+                    SET @INList += CASE WHEN LEN(@INList) > 0 THEN ',' ELSE '' END + @CurrentToken
+                SET @i += 1
+            END
+            SET @i += 1 -- skip closing )
+
+            -- Split and insert into multiple rows
+            DECLARE @SplitValue NVARCHAR(MAX)
+            DECLARE in_cursor CURSOR FOR 
+                SELECT TRIM(value) 
+                FROM STRING_SPLIT(REPLACE(REPLACE(@INList, '(', ''), ')', ''), ',')
+
+            OPEN in_cursor
+            FETCH NEXT FROM in_cursor INTO @SplitValue
+
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+                VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @SplitValue)
+
+                FETCH NEXT FROM in_cursor INTO @SplitValue
+            END
+
+            CLOSE in_cursor
+            DEALLOCATE in_cursor
+
+            SET @Cond = NULL
+            CONTINUE
+        END
+        ELSE
+        BEGIN
+            -- Standard operator/value
+            SET @Val = @Next2
+            SET @i += 3
+
+            INSERT INTO @Filters (BracketLevel, ConditionType, ColumnName, Operator, Value1)
+            VALUES (@BracketLevel, ISNULL(@Cond, 'AND'), @Col, @Op, @Val)
+
+            SET @Cond = NULL
+            CONTINUE
+        END
+    END
+END---------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------
 
