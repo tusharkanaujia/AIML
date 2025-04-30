@@ -1,0 +1,155 @@
+-- Updated Procedure to Dynamically Parse WHERE Clause and Populate FilterStorage
+
+-- 1. Table to store parsed filters CREATE TABLE dbo.FilterStorage ( TableName NVARCHAR(100), BracketLevel INT, ConditionType NVARCHAR(10), ColumnName NVARCHAR(100), Operator NVARCHAR(20), Value1 NVARCHAR(MAX), Value2 NVARCHAR(MAX), ValueType NVARCHAR(20) );
+
+-- 2. Table to store execution logs CREATE TABLE dbo.FilterExecutionLog ( LogID INT IDENTITY(1,1) PRIMARY KEY, TableName NVARCHAR(100), ExecutedBy NVARCHAR(100), ExecutionTime DATETIME, GeneratedSQL NVARCHAR(MAX) );
+
+-- 3. Updated ParseWhereClause Procedure CREATE OR ALTER PROCEDURE dbo.ParseWhereClause @TableName NVARCHAR(100), @WhereClause NVARCHAR(MAX), @ExecutedBy NVARCHAR(100) = SYSTEM_USER AS BEGIN SET NOCOUNT ON; DELETE FROM dbo.FilterStorage WHERE TableName = @TableName;
+
+DECLARE @Clause NVARCHAR(MAX) = REPLACE(REPLACE(@WhereClause, '(', ' ( '), ')', ' ) ');
+DECLARE @xml XML = '<r><v>' + REPLACE(@Clause, ' ', '</v><v>') + '</v></r>';
+DECLARE @Tokens TABLE (TokenID INT IDENTITY(1,1), Token NVARCHAR(MAX));
+
+INSERT INTO @Tokens(Token)
+SELECT T.c.value('.', 'NVARCHAR(MAX)') FROM @xml.nodes('/r/v') AS T(c);
+
+DECLARE @i INT = 1, @cnt INT, @bracketLevel INT = 0;
+SELECT @cnt = COUNT(*) FROM @Tokens;
+
+DECLARE @condType NVARCHAR(10) = 'AND';
+WHILE @i <= @cnt
+BEGIN
+    DECLARE @tok NVARCHAR(MAX);
+    SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+
+    IF @tok = '(' SET @bracketLevel += 1;
+    ELSE IF @tok = ')' SET @bracketLevel -= 1;
+    ELSE IF UPPER(@tok) IN ('AND', 'OR') SET @condType = UPPER(@tok);
+    ELSE
+    BEGIN
+        DECLARE @col NVARCHAR(100), @op NVARCHAR(20), @val1 NVARCHAR(MAX), @val2 NVARCHAR(MAX) = NULL, @valType NVARCHAR(20);
+        SET @col = @tok;
+        SET @i += 1; SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+        SET @op = UPPER(@tok);
+        IF @op NOT IN ('IN', 'NOT IN', '=', '<>', '!=', '>', '<', '>=', '<=', 'LIKE', 'NOT LIKE')
+            SET @op = '='; -- Default fallback
+
+        SET @i += 1; SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+
+        IF @op IN ('IN', 'NOT IN') AND @tok = '('
+        BEGIN
+            WHILE 1=1
+            BEGIN
+                SET @i += 1;
+                SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+                IF @tok = ')' BREAK;
+                IF @tok <> ',' AND LEN(@tok) > 0
+                BEGIN
+                    SET @val1 = REPLACE(REPLACE(@tok, '''', ''), '"', '');
+                    SET @valType = CASE WHEN ISNUMERIC(@val1) = 1 THEN 'number' WHEN LOWER(@val1) IN ('true','false') THEN 'boolean' ELSE 'string' END;
+                    INSERT INTO dbo.FilterStorage
+                    VALUES (@TableName, @bracketLevel, @condType, @col, @op, @val1, NULL, @valType);
+                END
+            END
+        END
+        ELSE
+        BEGIN
+            SET @val1 = REPLACE(REPLACE(@tok, '''', ''), '"', '');
+            SET @valType = CASE WHEN ISNUMERIC(@val1) = 1 THEN 'number' WHEN LOWER(@val1) IN ('true','false') THEN 'boolean' ELSE 'string' END;
+            INSERT INTO dbo.FilterStorage
+            VALUES (@TableName, @bracketLevel, @condType, @col, @op, @val1, NULL, @valType);
+        END
+    END
+    SET @i += 1;
+END
+
+END
+
+-- 4. Dynamic SQL Builder Procedure with Logging CREATE OR ALTER PROCEDURE dbo.BuildDynamicSQL @TableName NVARCHAR(100), @ExecutedBy NVARCHAR(100) = SYSTEM_USER AS BEGIN SET NOCOUNT ON; DECLARE @sql NVARCHAR(MAX) = N'SELECT * FROM ' + QUOTENAME(@TableName) + ' WHERE ';
+
+DECLARE @curCond NVARCHAR(MAX) = '', @lastLevel INT = -1;
+DECLARE @column NVARCHAR(100), @operator NVARCHAR(20), @val1 NVARCHAR(MAX), @valType NVARCHAR(20), @condType NVARCHAR(10), @bracketLevel INT;
+
+DECLARE cur CURSOR FOR
+SELECT BracketLevel, ConditionType, ColumnName, Operator, Value1, ValueType
+FROM dbo.FilterStorage
+WHERE TableName = @TableName
+ORDER BY BracketLevel, ColumnName;
+
+OPEN cur
+FETCH NEXT FROM cur INTO @bracketLevel, @condType, @column, @operator, @val1, @valType;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    IF @curCond <> '' SET @curCond += ' ' + @condType + ' ';
+
+    IF @operator IN ('IN', 'NOT IN')
+    BEGIN
+        SET @curCond += @column + ' ' + @operator + ' (' +
+            STRING_AGG(CASE WHEN @valType = 'string' THEN '''' + @val1 + '''' ELSE @val1 END, ',') + ')';
+    END
+    ELSE
+    BEGIN
+        SET @curCond += @column + ' ' + @operator + ' ' +
+            CASE WHEN @valType = 'string' THEN '''' + @val1 + ''''
+                 WHEN @valType = 'boolean' THEN LOWER(@val1)
+                 ELSE @val1 END;
+    END
+    FETCH NEXT FROM cur INTO @bracketLevel, @condType, @column, @operator, @val1, @valType;
+END
+
+CLOSE cur
+DEALLOCATE cur
+
+SET @sql += @curCond;
+
+-- Log the SQL
+INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+VALUES (@TableName, @ExecutedBy, GETDATE(), @sql);
+
+-- Execute SQL
+EXEC sp_executesql @sql;
+
+END
+
+
+1. Input
+
+DECLARE @TableName NVARCHAR(100) = 'SampleData';
+DECLARE @WhereClause NVARCHAR(MAX) = 
+    '(security_rating_assetclass IN (''K1'',''K2'',''K3'') 
+      OR (position_source = ''DSP_CRISTAL'' AND security_rating_assetclass = '''')) 
+     AND security_id_isin LIKE ''US%'' 
+     AND long_excluded = false 
+     AND security_country_id_risk IN (''AT'',''BE'',''CH'',''US'')';
+
+
+---
+
+2. Parse the WHERE clause
+
+EXEC dbo.ParseWhereClause 
+    @TableName = @TableName, 
+    @WhereClause = @WhereClause;
+
+
+---
+
+3. View the parsed filter table
+
+SELECT * FROM dbo.FilterStorage WHERE TableName = 'SampleData';
+
+
+---
+
+4. Build and execute dynamic SQL
+
+EXEC dbo.BuildDynamicSQL 
+    @TableName = 'SampleData';
+
+
+---
+
+5. View logged SQL
+
+SELECT * FROM dbo.FilterExecutionLog ORDER BY ExecutionTime DESC;
