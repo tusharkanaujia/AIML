@@ -31,7 +31,7 @@ END;
 GO
 
 -- ============================================
--- PROCEDURE: ParseWhereClause
+-- PROCEDURE: ParseWhereClause (Fixed for operators)
 -- ============================================
 CREATE OR ALTER PROCEDURE dbo.ParseWhereClause
     @TableName NVARCHAR(100),
@@ -46,20 +46,28 @@ BEGIN
     SET @WhereClause = REPLACE(@WhereClause, ' = ''''', ' = ''##EMPTY_STRING##''');
     SET @WhereClause = REPLACE(@WhereClause, '=''''', '=''##EMPTY_STRING##''');
     
+    -- First ensure the operators remain intact by using distinctive replacements
+    SET @WhereClause = REPLACE(@WhereClause, '<=', '##LE##');
+    SET @WhereClause = REPLACE(@WhereClause, '>=', '##GE##');
+    SET @WhereClause = REPLACE(@WhereClause, '<>', '##NE##');
+    SET @WhereClause = REPLACE(@WhereClause, '<', '##LT##');
+    SET @WhereClause = REPLACE(@WhereClause, '>', '##GT##');
+    SET @WhereClause = REPLACE(@WhereClause, '=', '##EQ##');
+    
     -- Create a clean tokenization approach without using XML
-    -- First, add spaces around operators and special characters
+    -- Add spaces around operators and special characters
     DECLARE @Clause NVARCHAR(MAX) = @WhereClause;
     
     -- Replace common operators with space-padded versions
     SET @Clause = REPLACE(@Clause, '(', ' ( ');
     SET @Clause = REPLACE(@Clause, ')', ' ) ');
     SET @Clause = REPLACE(@Clause, ',', ' , ');
-    SET @Clause = REPLACE(@Clause, '=', ' = ');
-    SET @Clause = REPLACE(@Clause, '<>', ' <> ');
-    SET @Clause = REPLACE(@Clause, '<=', ' <= ');
-    SET @Clause = REPLACE(@Clause, '>=', ' >= ');
-    SET @Clause = REPLACE(@Clause, '<', ' < ');
-    SET @Clause = REPLACE(@Clause, '>', ' > ');
+    SET @Clause = REPLACE(@Clause, '##EQ##', ' = ');
+    SET @Clause = REPLACE(@Clause, '##NE##', ' <> ');
+    SET @Clause = REPLACE(@Clause, '##LE##', ' <= ');
+    SET @Clause = REPLACE(@Clause, '##GE##', ' >= ');
+    SET @Clause = REPLACE(@Clause, '##LT##', ' < ');
+    SET @Clause = REPLACE(@Clause, '##GT##', ' > ');
     SET @Clause = REPLACE(@Clause, ' AND ', ' AND ');
     SET @Clause = REPLACE(@Clause, ' OR ', ' OR ');
     SET @Clause = REPLACE(@Clause, ' IN ', ' IN ');
@@ -67,6 +75,15 @@ BEGIN
     SET @Clause = REPLACE(@Clause, ' IS NULL', ' IS NULL');
     SET @Clause = REPLACE(@Clause, ' IS NOT NULL', ' IS NOT NULL');
     SET @Clause = REPLACE(@Clause, ' BETWEEN ', ' BETWEEN ');
+    
+    -- Also handle lowercase versions
+    SET @Clause = REPLACE(@Clause, ' and ', ' AND ');
+    SET @Clause = REPLACE(@Clause, ' or ', ' OR ');
+    SET @Clause = REPLACE(@Clause, ' in ', ' IN ');
+    SET @Clause = REPLACE(@Clause, ' like ', ' LIKE ');
+    SET @Clause = REPLACE(@Clause, ' is null', ' IS NULL');
+    SET @Clause = REPLACE(@Clause, ' is not null', ' IS NOT NULL');
+    SET @Clause = REPLACE(@Clause, ' between ', ' BETWEEN ');
     
     -- Replace newlines with spaces
     SET @Clause = REPLACE(@Clause, CHAR(13) + CHAR(10), ' ');
@@ -174,6 +191,15 @@ BEGIN
         IF @i > @cnt BREAK;
         
         SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+        
+        -- Check for closing parenthesis after column name
+        IF @tok = ')'
+        BEGIN
+            -- Back up so the main loop can handle it
+            SET @i = @i - 1;
+            CONTINUE;
+        END
+        
         SET @op = UPPER(@tok);
 
         SET @i += 1; 
