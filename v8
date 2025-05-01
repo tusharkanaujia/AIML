@@ -686,3 +686,599 @@ END
 
 -- Check the log
 SELECT TOP 5 * FROM dbo.FilterExecutionLog ORDER BY ExecutionTime DESC;
+
+
+
+
+
+
+CREATE OR ALTER PROCEDURE dbo.BuildDynamicSQL
+    @TableName NVARCHAR(100),
+    @DynamicSQL NVARCHAR(MAX) OUTPUT,
+    @ExecutedBy NVARCHAR(100) = NULL,
+    @TopN INT = NULL,
+    @OrderBy NVARCHAR(MAX) = NULL,
+    @Debug BIT = 0,
+    @OptimizationLevel INT = 1, -- 0=None, 1=Basic, 2=Advanced, 3=Aggressive
+    @CreatePlanGuide BIT = 0,   -- Whether to create a plan guide for this query
+    @ForceRecompile BIT = 0     -- Whether to force query recompilation each execution
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Initialize output parameter at the start to avoid NULL
+    SET @DynamicSQL = '';
+    
+    IF @ExecutedBy IS NULL
+        SET @ExecutedBy = SYSTEM_USER;
+    
+    -- Check if table exists
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @TableName)
+    BEGIN
+        RAISERROR('Table "%s" does not exist in the database', 16, 1, @TableName);
+        RETURN;
+    END
+    
+    -- Check if there are any filters for this table
+    IF NOT EXISTS (SELECT 1 FROM dbo.FilterStorage WHERE TableName = @TableName)
+    BEGIN
+        RAISERROR('No filters found for table %s', 16, 1, @TableName);
+        RETURN;
+    END
+    
+    -- First, build the base SELECT statement
+    DECLARE @SQL NVARCHAR(MAX) = 'SELECT ';
+    
+    -- Add TOP if specified
+    IF @TopN IS NOT NULL
+    BEGIN
+        IF @TopN <= 0
+        BEGIN
+            RAISERROR('TOP value must be positive, got %d', 16, 1, @TopN);
+            RETURN;
+        END
+        
+        SET @SQL = @SQL + 'TOP(' + CAST(@TopN AS NVARCHAR(10)) + ') ';
+    END
+    
+    SET @SQL = @SQL + '* FROM ' + QUOTENAME(@TableName) + ' WITH (FORCESEEK) WHERE ';
+    
+    -- Get the number of distinct bracket levels to process
+    DECLARE @MaxBracketLevel INT;
+    SELECT @MaxBracketLevel = MAX(BracketLevel) FROM dbo.FilterStorage WHERE TableName = @TableName;
+    
+    -- Build WHERE clause by processing each bracket level
+    DECLARE @CurrentLevel INT = 0;
+    DECLARE @WhereClause NVARCHAR(MAX) = '';
+    DECLARE @FirstCondition BIT = 1;
+    DECLARE @OpenBrackets INT = 0;
+    
+    -- Create a table to collect parameter definitions and values for parameterized execution
+    DECLARE @Parameters TABLE (
+        ParamName NVARCHAR(50),
+        ParamType NVARCHAR(50),
+        ParamValue NVARCHAR(MAX)
+    );
+    
+    DECLARE @ParamCount INT = 0;
+    DECLARE @ParamDefinition NVARCHAR(MAX) = '';
+    
+    -- Process all filter conditions, ordered by bracket level
+    WHILE @CurrentLevel <= @MaxBracketLevel
+    BEGIN
+        -- Need to track if first condition at this level
+        DECLARE @FirstInLevel BIT = 1;
+        DECLARE @PrevCondType NVARCHAR(10) = '';
+        
+        -- Create a table to track columns that have been processed for IN clauses
+        DECLARE @ProcessedColumns TABLE (ColumnName NVARCHAR(100));
+        
+        -- Process each unique column at this level
+        DECLARE @Columns TABLE (ColumnName NVARCHAR(100), ConditionType NVARCHAR(10));
+        INSERT INTO @Columns
+        SELECT DISTINCT ColumnName, MAX(ConditionType) AS ConditionType
+        FROM dbo.FilterStorage
+        WHERE TableName = @TableName AND BracketLevel = @CurrentLevel
+        GROUP BY ColumnName;
+        
+        DECLARE @ColumnName NVARCHAR(100), @CondType NVARCHAR(10);
+        DECLARE ColumnCursor CURSOR FOR SELECT ColumnName, ConditionType FROM @Columns;
+        OPEN ColumnCursor;
+        FETCH NEXT FROM ColumnCursor INTO @ColumnName, @CondType;
+        
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Check if this column has IN conditions
+            IF EXISTS (
+                SELECT 1 FROM dbo.FilterStorage 
+                WHERE TableName = @TableName 
+                AND BracketLevel = @CurrentLevel 
+                AND ColumnName = @ColumnName
+                AND Operator = 'IN'
+            )
+            BEGIN
+                -- Handle IN clause specially - combine all values
+                DECLARE @InList NVARCHAR(MAX) = '';
+                
+                -- Get column metadata for parameter typing
+                DECLARE @ColumnDataType NVARCHAR(50) = 'NVARCHAR(MAX)'; -- Default
+                
+                -- Try to get the actual data type
+                SELECT @ColumnDataType = 
+                    CASE 
+                        WHEN DATA_TYPE IN ('char', 'varchar', 'nchar', 'nvarchar') 
+                            THEN DATA_TYPE + '(' + CASE WHEN CHARACTER_MAXIMUM_LENGTH = -1 
+                                                      THEN 'MAX' 
+                                                      ELSE CAST(CHARACTER_MAXIMUM_LENGTH AS VARCHAR(10)) 
+                                                 END + ')'
+                        WHEN DATA_TYPE IN ('decimal', 'numeric') 
+                            THEN DATA_TYPE + '(' + CAST(NUMERIC_PRECISION AS VARCHAR(10)) + ',' + 
+                                 CAST(NUMERIC_SCALE AS VARCHAR(10)) + ')'
+                        ELSE DATA_TYPE
+                    END
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName;
+                
+                -- For optimization level 2+, use table variables for large IN lists
+                IF @OptimizationLevel >= 2 AND 
+                   (SELECT COUNT(*) FROM dbo.FilterStorage 
+                    WHERE TableName = @TableName 
+                      AND BracketLevel = @CurrentLevel 
+                      AND ColumnName = @ColumnName
+                      AND Operator = 'IN') > 10
+                BEGIN
+                    -- Use table variable approach for large IN lists
+                    DECLARE @TempTableName NVARCHAR(50) = '#Temp_' + @ColumnName + '_Values';
+                    
+                    -- Create a temporary table for the IN values
+                    DECLARE @TempTableSQL NVARCHAR(MAX) = '
+                    IF OBJECT_ID(''tempdb..' + @TempTableName + ''') IS NOT NULL
+                        DROP TABLE ' + @TempTableName + ';
+                        
+                    CREATE TABLE ' + @TempTableName + ' (Value ' + @ColumnDataType + ' PRIMARY KEY);
+                    
+                    INSERT INTO ' + @TempTableName + ' (Value) VALUES ';
+                    
+                    -- Add each value to the temp table creation
+                    DECLARE @ValueInserts NVARCHAR(MAX) = '';
+                    SELECT @ValueInserts = @ValueInserts + 
+                        CASE WHEN LEN(@ValueInserts) > 0 THEN ',' ELSE '' END + 
+                        CASE 
+                            WHEN ValueType = 'string' THEN '(''' + REPLACE(Value1, '''', '''''') + ''')'
+                            WHEN ValueType = 'boolean' THEN 
+                                '(' + CASE 
+                                         WHEN LOWER(Value1) = 'true' THEN '1' 
+                                         WHEN LOWER(Value1) = 'false' THEN '0'
+                                         ELSE LOWER(Value1)
+                                      END + ')'
+                            ELSE '(' + Value1 + ')'
+                        END
+                    FROM dbo.FilterStorage
+                    WHERE TableName = @TableName 
+                      AND BracketLevel = @CurrentLevel 
+                      AND ColumnName = @ColumnName
+                      AND Operator = 'IN';
+                    
+                    SET @TempTableSQL = @TempTableSQL + @ValueInserts + ';';
+                    
+                    -- Add condition connector if needed
+                    IF @FirstInLevel = 0
+                        SET @WhereClause = @WhereClause + ' ' + @PrevCondType + ' ';
+                    
+                    -- Add exists condition with the temp table
+                    SET @WhereClause = @WhereClause + 'EXISTS (SELECT 1 FROM ' + @TempTableName + 
+                                       ' WHERE Value = ' + QUOTENAME(@TableName) + '.' + QUOTENAME(@ColumnName) + ')';
+                    
+                    -- Store the temp table creation SQL to be executed before the main query
+                    INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+                    VALUES (@TableName, @ExecutedBy, GETDATE(), @TempTableSQL);
+                END
+                ELSE
+                BEGIN
+                    -- Traditional IN list for smaller sets
+                    -- Build the IN list
+                    SELECT @InList = @InList + 
+                        CASE 
+                            WHEN ValueType = 'string' THEN 
+                                CASE WHEN LEN(@InList) > 0 THEN ', ' ELSE '' END + 
+                                '''' + REPLACE(Value1, '''', '''''') + ''''
+                            WHEN ValueType = 'boolean' THEN 
+                                CASE WHEN LEN(@InList) > 0 THEN ', ' ELSE '' END + 
+                                CASE 
+                                    WHEN LOWER(Value1) = 'true' THEN '1' 
+                                    WHEN LOWER(Value1) = 'false' THEN '0'
+                                    ELSE LOWER(Value1)
+                                END
+                            ELSE 
+                                CASE WHEN LEN(@InList) > 0 THEN ', ' ELSE '' END + Value1
+                        END
+                    FROM dbo.FilterStorage
+                    WHERE TableName = @TableName 
+                        AND BracketLevel = @CurrentLevel 
+                        AND ColumnName = @ColumnName
+                        AND Operator = 'IN';
+                    
+                    -- Only add if we have values
+                    IF LEN(@InList) > 0
+                    BEGIN
+                        -- Add condition connector if needed
+                        IF @FirstInLevel = 0
+                            SET @WhereClause = @WhereClause + ' ' + @PrevCondType + ' ';
+                        
+                        -- For optimization level 3+, parameterize the IN list
+                        IF @OptimizationLevel >= 3
+                        BEGIN
+                            -- Create parameter for this IN clause
+                            SET @ParamCount = @ParamCount + 1;
+                            DECLARE @ParamName NVARCHAR(50) = '@p' + CAST(@ParamCount AS NVARCHAR(10));
+                            
+                            -- Add the parameterized IN condition
+                            SET @WhereClause = @WhereClause + QUOTENAME(@ColumnName) + ' IN (' + @ParamName + ')';
+                            
+                            -- Store parameter info
+                            INSERT INTO @Parameters (ParamName, ParamType, ParamValue)
+                            VALUES (@ParamName, 'NVARCHAR(MAX)', @InList);
+                        END
+                        ELSE
+                        BEGIN
+                            -- Add the IN condition with literal values
+                            SET @WhereClause = @WhereClause + QUOTENAME(@ColumnName) + ' IN (' + @InList + ')';
+                        END
+                        
+                        -- Mark as processed
+                        INSERT INTO @ProcessedColumns VALUES (@ColumnName);
+                        
+                        -- Update flags
+                        SET @FirstInLevel = 0;
+                        SET @FirstCondition = 0;
+                        SET @PrevCondType = @CondType;
+                    END
+                END
+            END
+            
+            FETCH NEXT FROM ColumnCursor INTO @ColumnName, @CondType;
+        END
+        
+        CLOSE ColumnCursor;
+        DEALLOCATE ColumnCursor;
+        
+        -- Now process non-IN conditions
+        DECLARE @Operator NVARCHAR(20), @Value1 NVARCHAR(MAX), @Value2 NVARCHAR(MAX), @ValueType NVARCHAR(20);
+        DECLARE CondCursor CURSOR FOR 
+            SELECT ColumnName, Operator, Value1, Value2, ValueType, ConditionType 
+            FROM dbo.FilterStorage
+            WHERE TableName = @TableName 
+              AND BracketLevel = @CurrentLevel
+              AND Operator <> 'IN'
+              AND ColumnName NOT IN (SELECT ColumnName FROM @ProcessedColumns)
+            ORDER BY ColumnName;
+            
+        OPEN CondCursor;
+        FETCH NEXT FROM CondCursor INTO @ColumnName, @Operator, @Value1, @Value2, @ValueType, @CondType;
+        
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Add condition connector if needed
+            IF @FirstInLevel = 0
+                SET @WhereClause = @WhereClause + ' ' + @PrevCondType + ' ';
+            
+            -- Build condition
+            DECLARE @ConditionSQL NVARCHAR(MAX) = QUOTENAME(@ColumnName) + ' ';
+            
+            -- For optimization level 3, parameterize all conditions
+            IF @OptimizationLevel >= 3 AND @Operator NOT LIKE 'IS%NULL'
+            BEGIN
+                SET @ParamCount = @ParamCount + 1;
+                DECLARE @ParamName1 NVARCHAR(50) = '@p' + CAST(@ParamCount AS NVARCHAR(10));
+                DECLARE @ParamType NVARCHAR(50) = 
+                    CASE 
+                        WHEN @ValueType = 'number' THEN 'DECIMAL(18,2)'
+                        WHEN @ValueType = 'boolean' THEN 'BIT'
+                        ELSE 'NVARCHAR(MAX)'
+                    END;
+                
+                IF @Operator = 'LIKE'
+                BEGIN
+                    SET @ConditionSQL = @ConditionSQL + 'LIKE ' + @ParamName1;
+                    INSERT INTO @Parameters (ParamName, ParamType, ParamValue)
+                    VALUES (@ParamName1, 'NVARCHAR(MAX)', @Value1);
+                END
+                ELSE IF @Operator = 'BETWEEN'
+                BEGIN
+                    SET @ParamCount = @ParamCount + 1;
+                    DECLARE @ParamName2 NVARCHAR(50) = '@p' + CAST(@ParamCount AS NVARCHAR(10));
+                    
+                    SET @ConditionSQL = @ConditionSQL + 'BETWEEN ' + @ParamName1 + ' AND ' + @ParamName2;
+                    
+                    INSERT INTO @Parameters (ParamName, ParamType, ParamValue)
+                    VALUES (@ParamName1, @ParamType, @Value1);
+                    
+                    INSERT INTO @Parameters (ParamName, ParamType, ParamValue)
+                    VALUES (@ParamName2, @ParamType, @Value2);
+                END
+                ELSE -- Regular operators
+                BEGIN
+                    SET @ConditionSQL = @ConditionSQL + @Operator + ' ' + @ParamName1;
+                    
+                    -- Convert boolean values
+                    IF @ValueType = 'boolean'
+                    BEGIN
+                        SET @Value1 = CASE 
+                                         WHEN LOWER(@Value1) = 'true' THEN '1' 
+                                         WHEN LOWER(@Value1) = 'false' THEN '0'
+                                         ELSE @Value1
+                                      END;
+                    END
+                    
+                    INSERT INTO @Parameters (ParamName, ParamType, ParamValue)
+                    VALUES (@ParamName1, @ParamType, @Value1);
+                END
+            END
+            ELSE -- Non-parameterized version
+            BEGIN
+                IF @Operator = 'LIKE'
+                BEGIN
+                    SET @ConditionSQL = @ConditionSQL + 'LIKE ''' + @Value1 + '''';
+                END
+                ELSE IF @Operator = 'BETWEEN'
+                BEGIN
+                    IF @ValueType = 'string'
+                        SET @ConditionSQL = @ConditionSQL + 'BETWEEN ''' + 
+                                          REPLACE(@Value1, '''', '''''') + ''' AND ''' + 
+                                          REPLACE(@Value2, '''', '''''') + '''';
+                    ELSE
+                        SET @ConditionSQL = @ConditionSQL + 'BETWEEN ' + @Value1 + ' AND ' + @Value2;
+                END
+                ELSE IF @Operator LIKE 'IS%NULL'
+                BEGIN
+                    SET @ConditionSQL = @ConditionSQL + @Operator;
+                END
+                ELSE -- Regular operators
+                BEGIN
+                    SET @ConditionSQL = @ConditionSQL + @Operator + ' ';
+                    
+                    IF @ValueType = 'string'
+                    BEGIN
+                        IF @Value1 = ''
+                            SET @ConditionSQL = @ConditionSQL + '''''';
+                        ELSE
+                            SET @ConditionSQL = @ConditionSQL + '''' + REPLACE(@Value1, '''', '''''') + '''';
+                    END
+                    ELSE IF @ValueType = 'boolean'
+                        SET @ConditionSQL = @ConditionSQL + CASE 
+                                                           WHEN LOWER(@Value1) = 'true' THEN '1' 
+                                                           WHEN LOWER(@Value1) = 'false' THEN '0'
+                                                           ELSE LOWER(@Value1)
+                                                           END;
+                    ELSE
+                        SET @ConditionSQL = @ConditionSQL + @Value1;
+                END
+            END
+            
+            -- Add the condition
+            SET @WhereClause = @WhereClause + @ConditionSQL;
+            
+            -- Update flags
+            SET @FirstInLevel = 0;
+            SET @FirstCondition = 0;
+            SET @PrevCondType = @CondType;
+            
+            FETCH NEXT FROM CondCursor INTO @ColumnName, @Operator, @Value1, @Value2, @ValueType, @CondType;
+        END
+        
+        CLOSE CondCursor;
+        DEALLOCATE CondCursor;
+        
+        -- Add brackets for higher levels (in reverse order)
+        IF @CurrentLevel < @MaxBracketLevel AND @FirstInLevel = 0 -- Only if we added conditions at this level
+        BEGIN
+            SET @WhereClause = '(' + @WhereClause + ')';
+        END
+        
+        -- Move to next level
+        SET @CurrentLevel += 1;
+    END
+    
+    -- Ensure we have a valid WHERE clause
+    IF LEN(@WhereClause) = 0
+    BEGIN
+        RAISERROR('Failed to generate valid WHERE clause', 16, 1);
+        RETURN;
+    END
+    
+    -- Add the WHERE clause to the SQL
+    SET @SQL = @SQL + @WhereClause;
+    
+    -- Add ORDER BY if specified
+    IF @OrderBy IS NOT NULL
+    BEGIN
+        SET @SQL = @SQL + ' ORDER BY ' + @OrderBy;
+    END
+    
+    -- Add optimization query hints based on optimization level
+    DECLARE @QueryHints NVARCHAR(MAX) = '';
+    
+    -- Always force recompile if specified
+    IF @ForceRecompile = 1
+    BEGIN
+        SET @QueryHints = 'OPTION(RECOMPILE)';
+    END
+    -- For level 2, add basic join hints
+    ELSE IF @OptimizationLevel >= 2
+    BEGIN
+        -- Get the most common index on the table
+        DECLARE @IndexName NVARCHAR(100) = '';
+        SELECT TOP 1 @IndexName = i.name
+        FROM sys.indexes i
+        JOIN sys.objects o ON i.object_id = o.object_id
+        WHERE o.name = @TableName
+        AND i.type_desc = 'NONCLUSTERED'
+        ORDER BY i.index_id;
+        
+        IF @IndexName <> ''
+        BEGIN
+            -- Add USE INDEX hint for the most used index
+            IF LEN(@QueryHints) > 0
+                SET @QueryHints = @QueryHints + ', ';
+                
+            SET @QueryHints = @QueryHints + 'USE INDEX(' + @IndexName + ')';
+        END
+    END
+    -- For level 3, add even more sophisticated hints
+    ELSE IF @OptimizationLevel = 3
+    BEGIN
+        -- Add aggressive optimization hints
+        IF LEN(@QueryHints) > 0
+            SET @QueryHints = @QueryHints + ', ';
+            
+        SET @QueryHints = @QueryHints + 'MAXDOP(4), OPTIMIZE FOR UNKNOWN';
+    END
+    
+    -- Add the query hints to the SQL if we have any
+    IF LEN(@QueryHints) > 0
+    BEGIN
+        SET @SQL = @SQL + ' OPTION(' + @QueryHints + ')';
+    END
+    
+    -- Set output parameter
+    SET @DynamicSQL = @SQL;
+    
+    -- Build parameter definition string for sp_executesql
+    IF @OptimizationLevel >= 3 AND EXISTS (SELECT 1 FROM @Parameters)
+    BEGIN
+        SELECT @ParamDefinition = @ParamDefinition + 
+               CASE WHEN LEN(@ParamDefinition) > 0 THEN ', ' ELSE '' END +
+               ParamName + ' ' + ParamType
+        FROM @Parameters;
+        
+        -- Store the parameter definition and values
+        DECLARE @ParamSQL NVARCHAR(MAX) = 'EXEC sp_executesql @SQL, N''' + 
+                                         REPLACE(@ParamDefinition, '''', '''''') + ''',';
+                                         
+        -- Add parameter assignments
+        SELECT @ParamSQL = @ParamSQL +
+                          CASE WHEN ParamName <> (SELECT TOP 1 ParamName FROM @Parameters) THEN ', ' ELSE '' END +
+                          ParamName + '=''' + REPLACE(ParamValue, '''', '''''') + ''''
+        FROM @Parameters;
+        
+        -- Store the parameterized execution command
+        SET @DynamicSQL = @ParamSQL;
+    END
+    
+    -- Create a plan guide if requested
+    IF @CreatePlanGuide = 1
+    BEGIN
+        -- Generate a unique name for the plan guide
+        DECLARE @GuideName NVARCHAR(100) = 'PG_' + @TableName + '_' + 
+                                          CONVERT(NVARCHAR(50), NEWID());
+        
+        -- Check if a similar plan guide already exists and drop it
+        DECLARE @OldGuideSQL NVARCHAR(MAX) = '';
+        SELECT TOP 1 @OldGuideSQL = CAST(query_text AS NVARCHAR(MAX))
+        FROM sys.plan_guides
+        WHERE name LIKE 'PG_' + @TableName + '_%'
+        ORDER BY create_date DESC;
+        
+        IF @OldGuideSQL <> ''
+        BEGIN
+            -- Drop existing plan guide for this table
+            DECLARE @DropGuideSQL NVARCHAR(MAX) = '';
+            SELECT @DropGuideSQL = 'EXEC sp_control_plan_guide N''DROP'', N''' + name + ''''
+            FROM sys.plan_guides
+            WHERE name LIKE 'PG_' + @TableName + '_%';
+            
+            EXEC(@DropGuideSQL);
+        END
+        
+        -- Create the plan guide with optimized hints
+        DECLARE @CreateGuideSQL NVARCHAR(MAX) = '';
+        SET @CreateGuideSQL = 'EXEC sp_create_plan_guide
+            @name = N''' + @GuideName + ''',
+            @stmt = N''' + REPLACE(@SQL, '''', '''''') + ''',
+            @type = N''SQL'',
+            @module_or_batch = NULL,
+            @params = NULL,
+            @hints = N''OPTION(OPTIMIZE FOR UNKNOWN, MAXDOP(4), KEEP PLAN)''';
+            
+        BEGIN TRY
+            EXEC(@CreateGuideSQL);
+            
+            -- Log plan guide creation
+            INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+            VALUES (@TableName, @ExecutedBy, GETDATE(), 'Created plan guide: ' + @GuideName);
+        END TRY
+        BEGIN CATCH
+            -- Log the error but continue
+            INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+            VALUES (@TableName, @ExecutedBy, GETDATE(), 'Error creating plan guide: ' + ERROR_MESSAGE());
+        END CATCH
+    END
+    
+    -- Log the execution
+    INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+    VALUES (@TableName, @ExecutedBy, GETDATE(), @SQL);
+    
+    -- Debug mode - show the generated SQL
+    IF @Debug = 1
+    BEGIN
+        SELECT @SQL AS GeneratedSQL;
+        
+        -- Also show parameter info if parameterized
+        IF EXISTS (SELECT 1 FROM @Parameters)
+        BEGIN
+            SELECT ParamName, ParamType, ParamValue FROM @Parameters;
+        END
+        
+        -- And show optimization info
+        SELECT 
+            @OptimizationLevel AS OptimizationLevel,
+            @CreatePlanGuide AS CreatePlanGuide,
+            @ForceRecompile AS ForceRecompile,
+            @QueryHints AS QueryHints;
+    END
+END;
+GO
+
+
+-- Basic usage with plan guide creation
+DECLARE @SQL NVARCHAR(MAX);
+EXEC dbo.BuildDynamicSQL
+    @TableName = 'SampleData',
+    @DynamicSQL = @SQL OUTPUT,
+    @OptimizationLevel = 2,
+    @CreatePlanGuide = 1,
+    @ForceRecompile = 0,
+    @Debug = 1;
+
+-- Execute the optimized query
+EXEC (@SQL);
+
+
+-- Add filter usage tracking
+CREATE TABLE dbo.FilterUsageStats (
+    FilterID INT IDENTITY(1,1) PRIMARY KEY,
+    ColumnName NVARCHAR(100),
+    Operator NVARCHAR(20),
+    UsageCount INT DEFAULT 1,
+    AvgExecutionTime INT,
+    LastUsed DATETIME
+);
+
+-- Update your BuildDynamicSQL to track usage
+-- Add this at the end of your procedure
+MERGE INTO dbo.FilterUsageStats AS target
+USING (
+    SELECT ColumnName, Operator, AVG(DATEDIFF(ms, 0, ExecutionTime)) AS AvgTime
+    FROM dbo.FilterStorage fs
+    JOIN dbo.FilterExecutionLog fel ON fs.TableName = fel.TableName
+    WHERE fs.TableName = @TableName
+    GROUP BY ColumnName, Operator
+) AS source
+ON target.ColumnName = source.ColumnName AND target.Operator = source.Operator
+WHEN MATCHED THEN
+    UPDATE SET UsageCount = target.UsageCount + 1,
+              AvgExecutionTime = (target.AvgExecutionTime * target.UsageCount + source.AvgTime) / (target.UsageCount + 1),
+              LastUsed = GETDATE()
+WHEN NOT MATCHED THEN
+    INSERT (ColumnName, Operator, AvgExecutionTime, LastUsed)
+    VALUES (source.ColumnName, source.Operator, source.AvgTime, GETDATE());
