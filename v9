@@ -1,0 +1,848 @@
+CREATE OR ALTER PROCEDURE dbo.ParseWhereClause
+    @TableName NVARCHAR(100),
+    @WhereClause NVARCHAR(MAX),
+    @ExecutedBy NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.FilterStorage WHERE TableName = @TableName;
+
+    -- Special handling for empty string conditions
+    SET @WhereClause = REPLACE(@WhereClause, ' = ''''', ' = ''##EMPTY_STRING##''');
+    SET @WhereClause = REPLACE(@WhereClause, '=''''', '=''##EMPTY_STRING##''');
+    
+    -- Handle NOT operators (ensuring they stay with their parentheses)
+    SET @WhereClause = REPLACE(@WhereClause, ' NOT (', ' ##NOT_START## (');
+    SET @WhereClause = REPLACE(@WhereClause, ' not (', ' ##NOT_START## (');
+    SET @WhereClause = REPLACE(@WhereClause, 'NOT (', '##NOT_START## (');
+    SET @WhereClause = REPLACE(@WhereClause, 'not (', '##NOT_START## (');
+    
+    -- First ensure the operators remain intact by using distinctive replacements
+    SET @WhereClause = REPLACE(@WhereClause, '<=', '##LE##');
+    SET @WhereClause = REPLACE(@WhereClause, '>=', '##GE##');
+    SET @WhereClause = REPLACE(@WhereClause, '<>', '##NE##');
+    SET @WhereClause = REPLACE(@WhereClause, '<', '##LT##');
+    SET @WhereClause = REPLACE(@WhereClause, '>', '##GT##');
+    SET @WhereClause = REPLACE(@WhereClause, '=', '##EQ##');
+    
+    -- Create a clean tokenization approach without using XML
+    -- Add spaces around operators and special characters
+    DECLARE @Clause NVARCHAR(MAX) = @WhereClause;
+    
+    -- Replace common operators with space-padded versions
+    SET @Clause = REPLACE(@Clause, '(', ' ( ');
+    SET @Clause = REPLACE(@Clause, ')', ' ) ');
+    SET @Clause = REPLACE(@Clause, ',', ' , ');
+    SET @Clause = REPLACE(@Clause, '##EQ##', ' = ');
+    SET @Clause = REPLACE(@Clause, '##NE##', ' <> ');
+    SET @Clause = REPLACE(@Clause, '##LE##', ' <= ');
+    SET @Clause = REPLACE(@Clause, '##GE##', ' >= ');
+    SET @Clause = REPLACE(@Clause, '##LT##', ' < ');
+    SET @Clause = REPLACE(@Clause, '##GT##', ' > ');
+    SET @Clause = REPLACE(@Clause, ' AND ', ' AND ');
+    SET @Clause = REPLACE(@Clause, ' OR ', ' OR ');
+    SET @Clause = REPLACE(@Clause, ' IN ', ' IN ');
+    SET @Clause = REPLACE(@Clause, '##NOT_START##', ' NOT_START ');
+    SET @Clause = REPLACE(@Clause, ' LIKE ', ' LIKE ');
+    SET @Clause = REPLACE(@Clause, ' IS NULL', ' IS NULL');
+    SET @Clause = REPLACE(@Clause, ' IS NOT NULL', ' IS NOT NULL');
+    SET @Clause = REPLACE(@Clause, ' BETWEEN ', ' BETWEEN ');
+    SET @Clause = REPLACE(@Clause, ' NOT IN ', ' NOT IN ');
+    
+    -- Also handle lowercase versions
+    SET @Clause = REPLACE(@Clause, ' and ', ' AND ');
+    SET @Clause = REPLACE(@Clause, ' or ', ' OR ');
+    SET @Clause = REPLACE(@Clause, ' in ', ' IN ');
+    SET @Clause = REPLACE(@Clause, ' not in ', ' NOT IN ');
+    SET @Clause = REPLACE(@Clause, ' like ', ' LIKE ');
+    SET @Clause = REPLACE(@Clause, ' is null', ' IS NULL');
+    SET @Clause = REPLACE(@Clause, ' is not null', ' IS NOT NULL');
+    SET @Clause = REPLACE(@Clause, ' between ', ' BETWEEN ');
+    
+    -- Replace newlines with spaces
+    SET @Clause = REPLACE(@Clause, CHAR(13) + CHAR(10), ' ');
+    
+    -- Split the clause into tokens
+    DECLARE @Tokens TABLE (TokenID INT IDENTITY(1,1), Token NVARCHAR(1000));
+    
+    -- Normalize multiple spaces to single spaces
+    WHILE CHARINDEX('  ', @Clause) > 0
+    BEGIN
+        SET @Clause = REPLACE(@Clause, '  ', ' ');
+    END
+    
+    -- Trim leading/trailing spaces
+    SET @Clause = LTRIM(RTRIM(@Clause));
+    
+    -- Now split on spaces
+    DECLARE @Position INT = 1;
+    DECLARE @Token NVARCHAR(1000);
+    DECLARE @SpacePos INT;
+    
+    WHILE @Position <= LEN(@Clause)
+    BEGIN
+        -- Handle quoted strings as a single token
+        IF SUBSTRING(@Clause, @Position, 1) = ''''
+        BEGIN
+            DECLARE @EndQuote INT = CHARINDEX('''', @Clause, @Position + 1);
+            
+            -- If no closing quote found, use rest of string
+            IF @EndQuote = 0
+                SET @EndQuote = LEN(@Clause) + 1;
+                
+            -- Extract the quoted string including quotes
+            SET @Token = SUBSTRING(@Clause, @Position, @EndQuote - @Position + 1);
+            
+            -- Move position past the quoted string
+            SET @Position = @EndQuote + 1;
+        END
+        ELSE
+        BEGIN
+            -- Handle NOT IN as a single token
+            IF SUBSTRING(@Clause, @Position, 7) = 'NOT IN '
+            BEGIN
+                SET @Token = 'NOT IN';
+                SET @Position = @Position + 7;
+            END
+            ELSE
+            BEGIN
+                -- Find next space
+                SET @SpacePos = CHARINDEX(' ', @Clause, @Position);
+                
+                -- If no more spaces, use rest of string
+                IF @SpacePos = 0
+                    SET @SpacePos = LEN(@Clause) + 1;
+                    
+                -- Extract token
+                SET @Token = SUBSTRING(@Clause, @Position, @SpacePos - @Position);
+                
+                -- Move position past the token and space
+                SET @Position = @SpacePos + 1;
+            END
+        END
+        
+        -- Add token if not empty
+        IF LEN(@Token) > 0
+            INSERT INTO @Tokens (Token) VALUES (@Token);
+    END
+    
+    -- Process tokens
+    DECLARE @i INT = 1, @cnt INT, @bracketLevel INT = 0;
+    DECLARE @condType NVARCHAR(10) = 'AND';
+    DECLARE @tok NVARCHAR(MAX), @col NVARCHAR(100), @op NVARCHAR(20);
+    DECLARE @val1 NVARCHAR(MAX), @val2 NVARCHAR(MAX), @valType NVARCHAR(20);
+    
+    -- Track NOT expressions and their bracket levels
+    DECLARE @NotBrackets TABLE (
+        BracketLevel INT PRIMARY KEY,  -- Make this a primary key to prevent duplicates
+        ParentConditionType NVARCHAR(10)
+    );
+
+    SELECT @cnt = COUNT(*) FROM @Tokens;
+
+    WHILE @i <= @cnt
+    BEGIN
+        SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+
+        -- Handle special tokens
+        IF @tok = '('
+        BEGIN 
+            SET @bracketLevel += 1; 
+            
+            -- If previous token was NOT_START, mark this bracket level as a NOT expression
+            IF @i > 1
+            BEGIN
+                DECLARE @prevToken NVARCHAR(MAX);
+                SELECT @prevToken = Token FROM @Tokens WHERE TokenID = @i - 1;
+                
+                IF @prevToken = 'NOT_START'
+                BEGIN
+                    -- Store the current condition type before we enter the NOT expression
+                    INSERT INTO @NotBrackets (BracketLevel, ParentConditionType)
+                    VALUES (@bracketLevel, @condType);
+                END
+            END
+            
+            SET @i += 1; 
+            CONTINUE; 
+        END
+        
+        IF @tok = ')'
+        BEGIN 
+            SET @bracketLevel -= 1; 
+            SET @i += 1; 
+            CONTINUE; 
+        END
+        
+        IF UPPER(@tok) IN ('AND', 'OR')
+        BEGIN 
+            SET @condType = UPPER(@tok); 
+            SET @i += 1; 
+            CONTINUE; 
+        END
+        
+        -- Handle NOT_START token
+        IF @tok = 'NOT_START'
+        BEGIN
+            SET @i += 1;
+            CONTINUE;
+        END
+        
+        IF LEN(@tok) = 0
+        BEGIN 
+            SET @i += 1; 
+            CONTINUE; 
+        END -- Skip empty tokens
+
+        -- Start of a condition: first token is column name
+        SET @col = @tok;
+        SET @i += 1; 
+        IF @i > @cnt BREAK;
+        
+        SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+        
+        -- Check for closing parenthesis after column name
+        IF @tok = ')'
+        BEGIN
+            -- Back up so the main loop can handle it
+            SET @i = @i - 1;
+            CONTINUE;
+        END
+        
+        SET @op = UPPER(@tok);
+
+        SET @i += 1; 
+        IF @i > @cnt BREAK;
+        
+        SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+
+        -- Check if we're inside a NOT block
+        DECLARE @IsInNot BIT = 0;
+        DECLARE @NotParentCondType NVARCHAR(10) = 'AND';
+        
+        IF EXISTS (SELECT 1 FROM @NotBrackets WHERE BracketLevel = @bracketLevel)
+        BEGIN
+            SET @IsInNot = 1;
+            SELECT @NotParentCondType = ParentConditionType FROM @NotBrackets WHERE BracketLevel = @bracketLevel;
+        END
+        
+        -- Inside a NOT block, invert operators and condition types
+        DECLARE @effectiveOp NVARCHAR(20) = @op;
+        DECLARE @effectiveCondType NVARCHAR(10) = @condType;
+        
+        IF @IsInNot = 1
+        BEGIN
+            -- Invert the operator
+            SET @effectiveOp = 
+                CASE @op
+                    WHEN '=' THEN '<>'
+                    WHEN '<>' THEN '='
+                    WHEN '<' THEN '>='
+                    WHEN '>' THEN '<='
+                    WHEN '<=' THEN '>'
+                    WHEN '>=' THEN '<'
+                    WHEN 'IN' THEN 'NOT IN'
+                    WHEN 'NOT IN' THEN 'IN'
+                    WHEN 'LIKE' THEN 'NOT LIKE'
+                    WHEN 'NOT LIKE' THEN 'LIKE'
+                    WHEN 'IS NULL' THEN 'IS NOT NULL'
+                    WHEN 'IS NOT NULL' THEN 'IS NULL'
+                    ELSE @op
+                END;
+            
+            -- Invert the condition type (De Morgan's laws)
+            SET @effectiveCondType = 
+                CASE @condType
+                    WHEN 'AND' THEN 'OR'
+                    WHEN 'OR' THEN 'AND'
+                    ELSE @condType
+                END;
+        END
+
+        -- Handle IN and NOT IN clauses
+        IF (@op = 'IN' OR @op = 'NOT IN') AND @tok = '('
+        BEGIN
+            DECLARE @valList NVARCHAR(MAX) = '';
+            SET @i += 1;
+
+            WHILE @i <= @cnt
+            BEGIN
+                SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+                IF @tok = ')' BREAK;
+                IF @tok <> ','
+                BEGIN
+                    SET @valList += CASE WHEN LEN(@valList) > 0 THEN ',' ELSE '' END + REPLACE(@tok, '''', '');
+                END
+                SET @i += 1;
+            END
+
+            -- Split and insert each value
+            DECLARE @splitVal NVARCHAR(MAX);
+            DECLARE split CURSOR FOR SELECT value FROM STRING_SPLIT(@valList, ',');
+            OPEN split;
+            FETCH NEXT FROM split INTO @splitVal;
+
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                -- Restore empty strings
+                IF @splitVal = '##EMPTY_STRING##'
+                    SET @splitVal = '';
+                    
+                SET @valType = CASE WHEN ISNUMERIC(@splitVal) = 1 THEN 'number' ELSE 'string' END;
+                
+                INSERT INTO dbo.FilterStorage
+                VALUES (@TableName, @bracketLevel, @effectiveCondType, @col, @effectiveOp, @splitVal, NULL, @valType);
+                
+                FETCH NEXT FROM split INTO @splitVal;
+            END
+
+            CLOSE split; 
+            DEALLOCATE split;
+            
+            -- Move past the closing bracket
+            SET @i += 1;
+        END
+        -- Handle BETWEEN clause
+        ELSE IF @op = 'BETWEEN'
+        BEGIN
+            SET @val1 = REPLACE(@tok, '''', '');
+            -- Restore empty strings
+            IF @val1 = '##EMPTY_STRING##'
+                SET @val1 = '';
+                
+            SET @i += 2; -- Skip the AND keyword
+            IF @i > @cnt BREAK;
+            SELECT @tok = Token FROM @Tokens WHERE TokenID = @i;
+            SET @val2 = REPLACE(@tok, '''', '');
+            -- Restore empty strings
+            IF @val2 = '##EMPTY_STRING##'
+                SET @val2 = '';
+                
+            SET @valType = CASE WHEN ISNUMERIC(@val1) = 1 THEN 'number' ELSE 'string' END;
+            
+            INSERT INTO dbo.FilterStorage
+            VALUES (@TableName, @bracketLevel, @effectiveCondType, @col, @effectiveOp, @val1, @val2, @valType);
+        END
+        -- Handle NULL checks
+        ELSE IF @op IN ('IS', 'IS NOT') AND UPPER(@tok) = 'NULL'
+        BEGIN
+            INSERT INTO dbo.FilterStorage 
+            VALUES (@TableName, @bracketLevel, @effectiveCondType, @col, @effectiveOp + ' NULL', NULL, NULL, 'null');
+        END
+        -- Handle regular operators (=, <>, >, <, etc.)
+        ELSE
+        BEGIN
+            SET @val1 = REPLACE(@tok, '''', '');
+            -- Restore empty strings
+            IF @val1 = '##EMPTY_STRING##'
+                SET @val1 = '';
+                
+            SET @valType = CASE 
+                WHEN ISNUMERIC(@val1) = 1 THEN 'number' 
+                WHEN LOWER(@val1) IN ('true','false') THEN 'boolean' 
+                ELSE 'string' 
+            END;
+            
+            INSERT INTO dbo.FilterStorage
+            VALUES (@TableName, @bracketLevel, @effectiveCondType, @col, @effectiveOp, @val1, NULL, @valType);
+        END
+        
+        SET @i += 1;
+    END
+
+    -- Store NOT markers for BuildDynamicSQL to use - only once per bracket level
+    INSERT INTO dbo.FilterStorage (TableName, BracketLevel, ConditionType, ColumnName, Operator, Value1, Value2, ValueType)
+    SELECT DISTINCT @TableName, BracketLevel, 'NOT', 'NOT_MARKER', 'IS', '1', NULL, 'boolean'
+    FROM @NotBrackets;
+
+    -- Log the execution
+    INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+    VALUES (@TableName, @ExecutedBy, GETDATE(), @WhereClause);
+END;
+GO
+
+
+
+CREATE OR ALTER PROCEDURE dbo.BuildDynamicSQL
+    @TableName NVARCHAR(100),
+    @DynamicSQL NVARCHAR(MAX) OUTPUT,
+    @ExecutedBy NVARCHAR(100) = NULL,
+    @TopN INT = NULL,
+    @OrderBy NVARCHAR(MAX) = NULL,
+    @Debug BIT = 0,
+    @OptimizationLevel INT = 1, -- 0=None, 1=Basic, 2=Advanced, 3=Aggressive
+    @ForceRecompile BIT = 0     -- Whether to force query recompilation each execution
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Initialize output parameter at the start to avoid NULL
+    SET @DynamicSQL = '';
+    
+    IF @ExecutedBy IS NULL
+        SET @ExecutedBy = SYSTEM_USER;
+    
+    -- Check if table exists
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @TableName)
+    BEGIN
+        RAISERROR('Table "%s" does not exist in the database', 16, 1, @TableName);
+        RETURN;
+    END
+    
+    -- Check if there are any filters for this table
+    IF NOT EXISTS (SELECT 1 FROM dbo.FilterStorage WHERE TableName = @TableName)
+    BEGIN
+        RAISERROR('No filters found for table %s', 16, 1, @TableName);
+        RETURN;
+    END
+    
+    -- First, build the base SELECT statement
+    DECLARE @SQL NVARCHAR(MAX) = 'SELECT ';
+    
+    -- Add TOP if specified
+    IF @TopN IS NOT NULL
+    BEGIN
+        IF @TopN <= 0
+        BEGIN
+            RAISERROR('TOP value must be positive, got %d', 16, 1, @TopN);
+            RETURN;
+        END
+        
+        SET @SQL = @SQL + 'TOP(' + CAST(@TopN AS NVARCHAR(10)) + ') ';
+    END
+    
+    SET @SQL = @SQL + '* FROM ' + QUOTENAME(@TableName) + ' WHERE ';
+    
+    -- Get NOT bracket levels
+    DECLARE @NotBrackets TABLE (BracketLevel INT PRIMARY KEY);
+    INSERT INTO @NotBrackets (BracketLevel)
+    SELECT DISTINCT BracketLevel
+    FROM dbo.FilterStorage
+    WHERE TableName = @TableName 
+      AND ColumnName = 'NOT_MARKER' 
+      AND Operator = 'IS';
+    
+    -- Get the number of distinct bracket levels to process
+    DECLARE @MaxBracketLevel INT;
+    SELECT @MaxBracketLevel = MAX(BracketLevel) FROM dbo.FilterStorage WHERE TableName = @TableName;
+    
+    -- Build WHERE clause by processing each bracket level
+    DECLARE @WhereClause NVARCHAR(MAX) = '';
+    DECLARE @FirstCondition BIT = 1;
+    
+    -- Handle each bracket level separately
+    DECLARE @BracketLevels TABLE (Level INT);
+    INSERT INTO @BracketLevels (Level)
+    SELECT DISTINCT BracketLevel FROM dbo.FilterStorage 
+    WHERE TableName = @TableName
+    AND ColumnName <> 'NOT_MARKER'
+    ORDER BY BracketLevel;
+    
+    -- First, process level 0 conditions
+    IF EXISTS (SELECT 1 FROM @BracketLevels WHERE Level = 0)
+    BEGIN
+        -- Process all columns at level 0
+        DECLARE @Level0Columns TABLE (ColumnName NVARCHAR(100), CondType NVARCHAR(10));
+        INSERT INTO @Level0Columns (ColumnName, CondType)
+        SELECT DISTINCT ColumnName, MAX(ConditionType) AS CondType
+        FROM dbo.FilterStorage
+        WHERE TableName = @TableName AND BracketLevel = 0
+        AND ColumnName <> 'NOT_MARKER'
+        GROUP BY ColumnName;
+        
+        DECLARE @FirstL0 BIT = 1;
+        DECLARE @ColName NVARCHAR(100), @CondType NVARCHAR(10);
+        
+        DECLARE ColCursor CURSOR FOR 
+        SELECT ColumnName, CondType FROM @Level0Columns;
+        
+        OPEN ColCursor;
+        FETCH NEXT FROM ColCursor INTO @ColName, @CondType;
+        
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Check for IN/NOT IN conditions for this column
+            IF EXISTS (
+                SELECT 1 FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = 0
+                AND ColumnName = @ColName AND Operator IN ('IN', 'NOT IN')
+            )
+            BEGIN
+                -- Get the correct operator
+                DECLARE @InOperator NVARCHAR(10);
+                SELECT TOP 1 @InOperator = Operator
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = 0
+                AND ColumnName = @ColName AND Operator IN ('IN', 'NOT IN');
+                
+                -- Get all values for this IN/NOT IN clause
+                DECLARE @InValues NVARCHAR(MAX) = '';
+                SELECT @InValues = @InValues + 
+                    CASE WHEN LEN(@InValues) > 0 THEN ', ' ELSE '' END +
+                    CASE 
+                        WHEN ValueType = 'string' THEN '''' + REPLACE(Value1, '''', '''''') + ''''
+                        WHEN ValueType = 'boolean' THEN 
+                            CASE 
+                                WHEN LOWER(Value1) = 'true' THEN '1'
+                                WHEN LOWER(Value1) = 'false' THEN '0'
+                                ELSE Value1
+                            END
+                        ELSE Value1
+                    END
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = 0
+                AND ColumnName = @ColName AND Operator = @InOperator;
+                
+                -- Add to WHERE clause
+                IF LEN(@InValues) > 0
+                BEGIN
+                    IF @FirstL0 = 0
+                        SET @WhereClause = @WhereClause + ' AND ';
+                        
+                    SET @WhereClause = @WhereClause + QUOTENAME(@ColName) + ' ' + @InOperator + ' (' + @InValues + ')';
+                    SET @FirstL0 = 0;
+                END
+            END
+            ELSE
+            BEGIN
+                -- Handle non-IN operators
+                DECLARE @ColConditions NVARCHAR(MAX) = '';
+                DECLARE @FirstColCond BIT = 1;
+                
+                DECLARE @Op NVARCHAR(20), @Val1 NVARCHAR(MAX), @Val2 NVARCHAR(MAX), @ValType NVARCHAR(20);
+                DECLARE CondCursor CURSOR FOR
+                SELECT Operator, Value1, Value2, ValueType, ConditionType
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = 0
+                AND ColumnName = @ColName;
+                
+                OPEN CondCursor;
+                FETCH NEXT FROM CondCursor INTO @Op, @Val1, @Val2, @ValType, @CondType;
+                
+                WHILE @@FETCH_STATUS = 0
+                BEGIN
+                    -- Build condition
+                    DECLARE @SingleCond NVARCHAR(MAX) = '';
+                    
+                    IF @Op = 'BETWEEN'
+                    BEGIN
+                        IF @ValType = 'string'
+                            SET @SingleCond = QUOTENAME(@ColName) + ' BETWEEN ''' + 
+                                            REPLACE(@Val1, '''', '''''') + ''' AND ''' + 
+                                            REPLACE(@Val2, '''', '''''') + '''';
+                        ELSE
+                            SET @SingleCond = QUOTENAME(@ColName) + ' BETWEEN ' + @Val1 + ' AND ' + @Val2;
+                    END
+                    ELSE IF @Op LIKE 'IS%NULL'
+                    BEGIN
+                        SET @SingleCond = QUOTENAME(@ColName) + ' ' + @Op;
+                    END
+                    ELSE -- Regular operators
+                    BEGIN
+                        SET @SingleCond = QUOTENAME(@ColName) + ' ' + @Op + ' ';
+                        
+                        IF @ValType = 'string'
+                        BEGIN
+                            IF @Val1 = ''
+                                SET @SingleCond = @SingleCond + '''''';
+                            ELSE
+                                SET @SingleCond = @SingleCond + '''' + REPLACE(@Val1, '''', '''''') + '''';
+                        END
+                        ELSE IF @ValType = 'boolean'
+                            SET @SingleCond = @SingleCond + CASE 
+                                                          WHEN LOWER(@Val1) = 'true' THEN '1'
+                                                          WHEN LOWER(@Val1) = 'false' THEN '0'
+                                                          ELSE @Val1
+                                                       END;
+                        ELSE
+                            SET @SingleCond = @SingleCond + @Val1;
+                    END
+                    
+                    -- Add to column conditions
+                    IF @FirstColCond = 0
+                        SET @ColConditions = @ColConditions + ' AND ';
+                        
+                    SET @ColConditions = @ColConditions + @SingleCond;
+                    SET @FirstColCond = 0;
+                    
+                    FETCH NEXT FROM CondCursor INTO @Op, @Val1, @Val2, @ValType, @CondType;
+                END
+                
+                CLOSE CondCursor;
+                DEALLOCATE CondCursor;
+                
+                -- Add to WHERE clause
+                IF LEN(@ColConditions) > 0
+                BEGIN
+                    IF @FirstL0 = 0
+                        SET @WhereClause = @WhereClause + ' AND ';
+                        
+                    SET @WhereClause = @WhereClause + @ColConditions;
+                    SET @FirstL0 = 0;
+                END
+            END
+            
+            FETCH NEXT FROM ColCursor INTO @ColName, @CondType;
+        END
+        
+        CLOSE ColCursor;
+        DEALLOCATE ColCursor;
+    END
+    
+    -- Process higher bracket levels (1 and above)
+    DECLARE @BracketLevel INT;
+    DECLARE BracketCursor CURSOR FOR 
+    SELECT Level FROM @BracketLevels WHERE Level > 0 ORDER BY Level;
+    
+    OPEN BracketCursor;
+    FETCH NEXT FROM BracketCursor INTO @BracketLevel;
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Check if this level is a NOT block
+        DECLARE @IsNotBlock BIT = 0;
+        IF EXISTS (SELECT 1 FROM @NotBrackets WHERE BracketLevel = @BracketLevel)
+            SET @IsNotBlock = 1;
+        
+        -- Get dominant condition type at this level
+        DECLARE @LevelCondType NVARCHAR(10);
+        SELECT TOP 1 @LevelCondType = ConditionType
+        FROM dbo.FilterStorage
+        WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+          AND ColumnName <> 'NOT_MARKER';
+        
+        -- Process all conditions at this level
+        DECLARE @LevelSQL NVARCHAR(MAX) = '';
+        DECLARE @FirstLevelCond BIT = 1;
+        
+        -- Process all columns in this bracket level
+        DECLARE @LevelColumns TABLE (ColumnName NVARCHAR(100));
+        INSERT INTO @LevelColumns (ColumnName)
+        SELECT DISTINCT ColumnName 
+        FROM dbo.FilterStorage
+        WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+          AND ColumnName <> 'NOT_MARKER';
+        
+        DECLARE @LevelColName NVARCHAR(100);
+        DECLARE LevelColCursor CURSOR FOR SELECT ColumnName FROM @LevelColumns;
+        OPEN LevelColCursor;
+        FETCH NEXT FROM LevelColCursor INTO @LevelColName;
+        
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- Check for IN/NOT IN conditions
+            IF EXISTS (
+                SELECT 1 FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+                AND ColumnName = @LevelColName AND Operator IN ('IN', 'NOT IN')
+            )
+            BEGIN
+                -- Get the correct operator
+                DECLARE @LevelInOp NVARCHAR(10);
+                SELECT TOP 1 @LevelInOp = Operator
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+                AND ColumnName = @LevelColName AND Operator IN ('IN', 'NOT IN');
+                
+                -- Get all values
+                DECLARE @LevelInVals NVARCHAR(MAX) = '';
+                SELECT @LevelInVals = @LevelInVals + 
+                    CASE WHEN LEN(@LevelInVals) > 0 THEN ', ' ELSE '' END +
+                    CASE 
+                        WHEN ValueType = 'string' THEN '''' + REPLACE(Value1, '''', '''''') + ''''
+                        WHEN ValueType = 'boolean' THEN 
+                            CASE 
+                                WHEN LOWER(Value1) = 'true' THEN '1'
+                                WHEN LOWER(Value1) = 'false' THEN '0'
+                                ELSE Value1
+                            END
+                        ELSE Value1
+                    END
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+                AND ColumnName = @LevelColName AND Operator = @LevelInOp;
+                
+                -- Add to level SQL
+                IF LEN(@LevelInVals) > 0
+                BEGIN
+                    IF @FirstLevelCond = 0
+                        SET @LevelSQL = @LevelSQL + ' ' + @LevelCondType + ' ';
+                        
+                    SET @LevelSQL = @LevelSQL + QUOTENAME(@LevelColName) + ' ' + @LevelInOp + ' (' + @LevelInVals + ')';
+                    SET @FirstLevelCond = 0;
+                END
+            END
+            ELSE
+            BEGIN
+                -- Process other operators for this column
+                DECLARE @LevelColConditions NVARCHAR(MAX) = '';
+                DECLARE @FirstLevelColCond BIT = 1;
+                
+                DECLARE @LevelOp NVARCHAR(20), @LevelVal1 NVARCHAR(MAX), 
+                        @LevelVal2 NVARCHAR(MAX), @LevelValType NVARCHAR(20), @LevelCndType NVARCHAR(10);
+                
+                DECLARE LevelCondCursor CURSOR FOR
+                SELECT Operator, Value1, Value2, ValueType, ConditionType
+                FROM dbo.FilterStorage
+                WHERE TableName = @TableName AND BracketLevel = @BracketLevel
+                AND ColumnName = @LevelColName AND Operator NOT IN ('IN', 'NOT IN');
+                
+                OPEN LevelCondCursor;
+                FETCH NEXT FROM LevelCondCursor INTO @LevelOp, @LevelVal1, @LevelVal2, @LevelValType, @LevelCndType;
+                
+                WHILE @@FETCH_STATUS = 0
+                BEGIN
+                    -- Build condition
+                    DECLARE @LevelSingleCond NVARCHAR(MAX) = '';
+                    
+                    IF @LevelOp = 'BETWEEN'
+                    BEGIN
+                        IF @LevelValType = 'string'
+                            SET @LevelSingleCond = QUOTENAME(@LevelColName) + ' BETWEEN ''' + 
+                                                REPLACE(@LevelVal1, '''', '''''') + ''' AND ''' + 
+                                                REPLACE(@LevelVal2, '''', '''''') + '''';
+                        ELSE
+                            SET @LevelSingleCond = QUOTENAME(@LevelColName) + ' BETWEEN ' + @LevelVal1 + ' AND ' + @LevelVal2;
+                    END
+                    ELSE IF @LevelOp LIKE 'IS%NULL'
+                    BEGIN
+                        SET @LevelSingleCond = QUOTENAME(@LevelColName) + ' ' + @LevelOp;
+                    END
+                    ELSE -- Regular operators
+                    BEGIN
+                        SET @LevelSingleCond = QUOTENAME(@LevelColName) + ' ' + @LevelOp + ' ';
+                        
+                        IF @LevelValType = 'string'
+                        BEGIN
+                            IF @LevelVal1 = ''
+                                SET @LevelSingleCond = @LevelSingleCond + '''''';
+                            ELSE
+                                SET @LevelSingleCond = @LevelSingleCond + '''' + REPLACE(@LevelVal1, '''', '''''') + '''';
+                        END
+                        ELSE IF @LevelValType = 'boolean'
+                            SET @LevelSingleCond = @LevelSingleCond + CASE 
+                                                                  WHEN LOWER(@LevelVal1) = 'true' THEN '1'
+                                                                  WHEN LOWER(@LevelVal1) = 'false' THEN '0'
+                                                                  ELSE @LevelVal1
+                                                               END;
+                        ELSE
+                            SET @LevelSingleCond = @LevelSingleCond + @LevelVal1;
+                    END
+                    
+                    -- Add to column conditions
+                    IF @FirstLevelColCond = 0
+                        SET @LevelColConditions = @LevelColConditions + ' AND ';
+                        
+                    SET @LevelColConditions = @LevelColConditions + @LevelSingleCond;
+                    SET @FirstLevelColCond = 0;
+                    
+                    FETCH NEXT FROM LevelCondCursor INTO @LevelOp, @LevelVal1, @LevelVal2, @LevelValType, @LevelCndType;
+                END
+                
+                CLOSE LevelCondCursor;
+                DEALLOCATE LevelCondCursor;
+                
+                -- Add to level SQL
+                IF LEN(@LevelColConditions) > 0
+                BEGIN
+                    IF @FirstLevelCond = 0
+                        SET @LevelSQL = @LevelSQL + ' ' + @LevelCondType + ' ';
+                        
+                    SET @LevelSQL = @LevelSQL + @LevelColConditions;
+                    SET @FirstLevelCond = 0;
+                END
+            END
+            
+            FETCH NEXT FROM LevelColCursor INTO @LevelColName;
+        END
+        
+        CLOSE LevelColCursor;
+        DEALLOCATE LevelColCursor;
+        
+        -- Add this level's conditions to the WHERE clause
+        IF LEN(@LevelSQL) > 0
+        BEGIN
+            IF LEN(@WhereClause) > 0
+                SET @WhereClause = @WhereClause + ' AND ';
+                
+            -- Apply NOT operator if this is a NOT block
+            IF @IsNotBlock = 1
+                SET @WhereClause = @WhereClause + 'NOT ';
+                
+            SET @WhereClause = @WhereClause + '(' + @LevelSQL + ')';
+        END
+        
+        FETCH NEXT FROM BracketCursor INTO @BracketLevel;
+    END
+    
+    CLOSE BracketCursor;
+    DEALLOCATE BracketCursor;
+    
+    -- Combine with the SELECT statement
+    SET @SQL = @SQL + @WhereClause;
+    
+    -- Add ORDER BY if specified
+    IF @OrderBy IS NOT NULL
+    BEGIN
+        SET @SQL = @SQL + ' ORDER BY ' + @OrderBy;
+    END
+    
+    -- Add optimization query hints based on optimization level
+    DECLARE @QueryHints NVARCHAR(MAX) = '';
+    
+    -- Always force recompile if specified
+    IF @ForceRecompile = 1
+    BEGIN
+        SET @QueryHints = 'RECOMPILE';
+    END
+    -- For level 2, add basic hints
+    ELSE IF @OptimizationLevel >= 2
+    BEGIN
+        -- Get the most common index on the table
+        DECLARE @IndexName NVARCHAR(100) = '';
+        SELECT TOP 1 @IndexName = i.name
+        FROM sys.indexes i
+        JOIN sys.objects o ON i.object_id = o.object_id
+        WHERE o.name = @TableName
+        AND i.type_desc = 'NONCLUSTERED'
+        ORDER BY i.index_id;
+        
+        IF @IndexName <> ''
+        BEGIN
+            -- Add USE INDEX hint for the most used index
+            IF LEN(@QueryHints) > 0
+                SET @QueryHints = @QueryHints + ', ';
+                
+            SET @QueryHints = @QueryHints + 'USE INDEX(' + @IndexName + ')';
+        END
+    END
+    -- For level 3, add even more sophisticated hints
+    ELSE IF @OptimizationLevel = 3
+    BEGIN
+        -- Add aggressive optimization hints
+        IF LEN(@QueryHints) > 0
+            SET @QueryHints = @QueryHints + ', ';
+            
+        SET @QueryHints = @QueryHints + 'MAXDOP(4), OPTIMIZE FOR UNKNOWN';
+    END
+    
+    -- Add the query hints to the SQL if we have any
+    IF LEN(@QueryHints) > 0
+    BEGIN
+        SET @SQL = @SQL + ' OPTION(' + @QueryHints + ')';
+    END
+    
+    -- Set output parameter
+    SET @DynamicSQL = @SQL;
+    
+    -- Log the execution
+    INSERT INTO dbo.FilterExecutionLog (TableName, ExecutedBy, ExecutionTime, GeneratedSQL)
+    VALUES (@TableName, @ExecutedBy, GETDATE(), @SQL);
+    
+    -- Debug mode - show the generated SQL
+    IF @Debug = 1
+    BEGIN
+        SELECT @SQL AS GeneratedSQL;
+    END
+END;
+GO
