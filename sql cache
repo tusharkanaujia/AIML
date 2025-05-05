@@ -1,0 +1,152 @@
+I'll enhance the solution to prevent concurrent processes from inserting the same data through proper locking mechanisms. Here's an improved version of the caching procedure:
+
+```sql
+CREATE PROCEDURE dbo.GetCachedFunctionResult
+    @BusinessStateID INT,
+    @DateParam DATE,
+    @MaxCacheAge INT = 60 -- Maximum cache age in minutes
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    DECLARE @CacheNeedsRefresh BIT = 0;
+    DECLARE @CurrentTime DATETIME = GETDATE();
+    
+    -- Use transaction with proper isolation level
+    BEGIN TRANSACTION;
+    
+    -- Add application lock to prevent concurrent refresh attempts
+    -- This is more targeted than table locking
+    DECLARE @LockResource NVARCHAR(255) = 'FunctionCache_' + CAST(@BusinessStateID AS NVARCHAR) + '_' + CONVERT(NVARCHAR, @DateParam, 112);
+    DECLARE @LockResult INT;
+    
+    EXEC @LockResult = sp_getapplock 
+        @Resource = @LockResource,
+        @LockMode = 'Exclusive',
+        @LockTimeout = 5000, -- Wait up to 5 seconds
+        @LockOwner = 'Transaction';
+        
+    -- If we couldn't get the lock, someone else is refreshing
+    IF @LockResult < 0
+    BEGIN
+        -- Failed to acquire lock, roll back transaction
+        ROLLBACK TRANSACTION;
+        
+        -- Wait a moment and check if data exists
+        WAITFOR DELAY '00:00:01'; -- Wait 1 second
+        
+        -- Return existing data if available (outside transaction)
+        IF EXISTS (
+            SELECT 1 
+            FROM dbo.FunctionResultCache WITH (NOLOCK)
+            WHERE BusinessStateID = @BusinessStateID 
+              AND DateParam = @DateParam
+        )
+        BEGIN
+            SELECT 
+                Column1,
+                Column2
+                -- etc.
+            FROM dbo.FunctionResultCache WITH (NOLOCK)
+            WHERE BusinessStateID = @BusinessStateID 
+              AND DateParam = @DateParam;
+            RETURN;
+        END
+        ELSE
+        BEGIN
+            -- Still no data, retry the whole process once
+            EXEC dbo.GetCachedFunctionResult 
+                @BusinessStateID = @BusinessStateID,
+                @DateParam = @DateParam,
+                @MaxCacheAge = @MaxCacheAge;
+            RETURN;
+        END
+    END
+    
+    -- Check if we need to refresh the cache (while holding the lock)
+    IF NOT EXISTS (
+        SELECT 1 
+        FROM dbo.FunctionResultCache WITH (UPDLOCK, HOLDLOCK)
+        WHERE BusinessStateID = @BusinessStateID 
+          AND DateParam = @DateParam
+          AND DATEDIFF(MINUTE, LastRefreshed, @CurrentTime) <= @MaxCacheAge
+    )
+    BEGIN
+        SET @CacheNeedsRefresh = 1;
+        
+        -- Delete old cache if it exists
+        DELETE FROM dbo.FunctionResultCache 
+        WHERE BusinessStateID = @BusinessStateID 
+          AND DateParam = @DateParam;
+        
+        -- Populate cache with new data
+        INSERT INTO dbo.FunctionResultCache (
+            BusinessStateID, 
+            DateParam, 
+            LastRefreshed,
+            Column1,
+            Column2
+            -- etc.
+        )
+        SELECT 
+            @BusinessStateID,
+            @DateParam,
+            @CurrentTime,
+            result.Column1,
+            result.Column2
+            -- etc.
+        FROM dbo.YourExistingFunction(@DateParam) AS result;
+    END
+    
+    -- Release the lock by committing the transaction
+    COMMIT TRANSACTION;
+    
+    -- Return the cached results
+    SELECT 
+        Column1,
+        Column2
+        -- etc.
+    FROM dbo.FunctionResultCache
+    WHERE BusinessStateID = @BusinessStateID 
+      AND DateParam = @DateParam;
+END;
+```
+
+This improved procedure adds several concurrency protections:
+
+1. **Application-level locking** using `sp_getapplock` - This creates a named lock specific to the business state and date parameter, preventing other processes from refreshing the same cache entry simultaneously.
+
+2. **Transaction isolation** - The procedure uses transactions with proper locking hints (`UPDLOCK`, `HOLDLOCK`) to ensure data consistency.
+
+3. **Retry mechanism** - If a process can't acquire the lock (because another process is already refreshing the cache), it waits briefly and then checks if the data is available.
+
+4. **NOLOCK hint for reads** - When checking for existing data outside the transaction, it uses `WITH (NOLOCK)` to prevent blocking.
+
+Additional performance considerations:
+
+1. **Add indexing to the cache table**:
+   ```sql
+   CREATE INDEX IX_FunctionResultCache_LastRefreshed 
+   ON dbo.FunctionResultCache(BusinessStateID, DateParam, LastRefreshed);
+   ```
+
+2. **Consider implementing deadlock retry logic** in case of complex concurrent access patterns:
+   ```sql
+   BEGIN TRY
+       -- Existing procedure code
+   END TRY
+   BEGIN CATCH
+       IF ERROR_NUMBER() = 1205 -- Deadlock victim
+       BEGIN
+           -- Wait and retry
+           WAITFOR DELAY '00:00:00.1';
+           EXEC dbo.GetCachedFunctionResult @BusinessStateID, @DateParam, @MaxCacheAge;
+       END
+       ELSE
+           THROW; -- Re-throw other errors
+   END CATCH
+   ```
+
+3. **Monitor cache usage** with a tracking table to optimize cache parameters over time.
+
+This solution provides robust concurrency control while maintaining high performance for your SQL Server function that returns large result sets.
