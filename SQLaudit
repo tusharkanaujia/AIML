@@ -1,0 +1,112 @@
+-- Create audit table
+CREATE TABLE dbo.DDL_AuditLog (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    EventType NVARCHAR(100),
+    ObjectName NVARCHAR(100),
+    LoginName NVARCHAR(100),
+    UserName NVARCHAR(100),
+    EventTime DATETIME,
+    SQLCommand NVARCHAR(MAX)
+);
+go
+
+-- Create DDL trigger
+CREATE TRIGGER DDL_Audit_Trigger
+ON DATABASE
+FOR CREATE_PROCEDURE, ALTER_PROCEDURE, DROP_PROCEDURE,
+    CREATE_TABLE, ALTER_TABLE, DROP_TABLE,
+    CREATE_VIEW, ALTER_VIEW, DROP_VIEW,
+    CREATE_FUNCTION, ALTER_FUNCTION, DROP_FUNCTION
+	
+AS
+BEGIN
+    INSERT INTO dbo.DDL_AuditLog (EventType, ObjectName, LoginName, UserName, EventTime, SQLCommand)
+    VALUES (
+        EVENTDATA().value('(/EVENT_INSTANCE/EventType)[1]', 'NVARCHAR(100)'),
+        EVENTDATA().value('(/EVENT_INSTANCE/ObjectName)[1]', 'NVARCHAR(100)'),
+        EVENTDATA().value('(/EVENT_INSTANCE/LoginName)[1]', 'NVARCHAR(100)'),
+        USER_NAME(),
+        GETDATE(),
+        EVENTDATA().value('(/EVENT_INSTANCE/TSQLCommand)[1]', 'NVARCHAR(MAX)')
+    );
+END;
+
+
+SELECT * FROM dbo.DDL_AuditLog
+
+
+-------------------
+
+-- Find schema changes in default trace
+DECLARE @TraceFile NVARCHAR(500)
+SELECT @TraceFile = REVERSE(SUBSTRING(REVERSE(path), CHARINDEX('\', REVERSE(path)), 500)) + 'log.trc'
+FROM sys.traces 
+WHERE id = 1;
+
+SELECT 
+    te.name AS EventName,
+    t.LoginName,
+    t.NTUserName,
+    t.NTDomainName,
+    t.HostName,
+    t.ApplicationName,
+    t.StartTime,
+    t.ObjectName,
+    t.DatabaseName,
+    t.TSQLCommand
+FROM fn_trace_gettable(@TraceFile, DEFAULT) t
+INNER JOIN sys.trace_events te ON t.EventClass = te.trace_event_id
+WHERE EventClass IN (46,47,164) -- CREATE/ALTER/DROP events
+    AND DatabaseName = 'YourDatabase'
+ORDER BY StartTime DESC;
+
+
+----
+
+
+CREATE TABLE dbo.DDLChangeLog (
+    ID INT IDENTITY(1,1) PRIMARY KEY,
+    EventType NVARCHAR(100),
+    SchemaName NVARCHAR(200),
+    ObjectName NVARCHAR(200),
+    FullObjectName AS (QUOTENAME(SchemaName) + '.' + QUOTENAME(ObjectName)),
+    ObjectType NVARCHAR(100),
+    TSQLCommand XML,
+    EventDate DATETIME DEFAULT GETDATE(),
+    LoginName NVARCHAR(100),
+    HostName NVARCHAR(100),
+    ApplicationName NVARCHAR(200)
+);
+
+CREATE TRIGGER trg_AuditDDLChanges
+ON DATABASE
+FOR CREATE_PROCEDURE, ALTER_PROCEDURE, DROP_PROCEDURE,
+    CREATE_VIEW, ALTER_VIEW, DROP_VIEW,
+    CREATE_TABLE, ALTER_TABLE, DROP_TABLE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @EventData XML = EVENTDATA();
+
+    INSERT INTO dbo.DDLChangeLog (
+        EventType,
+        SchemaName,
+        ObjectName,
+        ObjectType,
+        TSQLCommand,
+        LoginName,
+        HostName,
+        ApplicationName
+    )
+    VALUES (
+        @EventData.value('(/EVENT_INSTANCE/EventType)[1]', 'NVARCHAR(100)'),
+        @EventData.value('(/EVENT_INSTANCE/SchemaName)[1]', 'NVARCHAR(200)'),
+        @EventData.value('(/EVENT_INSTANCE/ObjectName)[1]', 'NVARCHAR(200)'),
+        @EventData.value('(/EVENT_INSTANCE/ObjectType)[1]', 'NVARCHAR(100)'),
+        @EventData,
+        ORIGINAL_LOGIN(),
+        HOST_NAME(),
+        APP_NAME()
+    );
+END;
