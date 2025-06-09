@@ -6,8 +6,8 @@
 
     SELECT 
         ISIN,
-        ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-        ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+        LevelProd10, LevelProd9, LevelProd8, LevelProd7, LevelProd6PR,
+        LevelProd5PG, LevelProd4SD, LevelProd3SB, LevelProd2BG,
         GBPIFRSBalanceSheetAmount,
         ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
     INTO #BusinessBase
@@ -22,21 +22,21 @@
 
     SELECT *,
         CASE 
-            WHEN ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
-            WHEN ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
-            WHEN ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
-            WHEN ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
-            WHEN ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
-            WHEN ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
-            WHEN ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
-            WHEN ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
-            WHEN ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
+            WHEN LevelProd10 IS NOT NULL THEN 'LevelProd10'
+            WHEN LevelProd9  IS NOT NULL THEN 'LevelProd9'
+            WHEN LevelProd8  IS NOT NULL THEN 'LevelProd8'
+            WHEN LevelProd7  IS NOT NULL THEN 'LevelProd7'
+            WHEN LevelProd6PR IS NOT NULL THEN 'LevelProd6PR'
+            WHEN LevelProd5PG IS NOT NULL THEN 'LevelProd5PG'
+            WHEN LevelProd4SD IS NOT NULL THEN 'LevelProd4SD'
+            WHEN LevelProd3SB IS NOT NULL THEN 'LevelProd3SB'
+            WHEN LevelProd2BG IS NOT NULL THEN 'LevelProd2BG'
             ELSE 'UNKNOWN'
         END AS AllocationLevelName,
 
         COALESCE(
-            ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-            ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG, 'UNKNOWN'
+            LevelProd10, LevelProd9, LevelProd8, LevelProd7, LevelProd6PR,
+            LevelProd5PG, LevelProd4SD, LevelProd3SB, LevelProd2BG, 'UNKNOWN'
         ) AS AllocationLevelValue
     INTO #Labeled
     FROM #BusinessBase;
@@ -78,8 +78,8 @@
         END AS PercentOfTotal,
         -- AllocationType tagging logic
         CASE 
-            WHEN g.AllocationLevelName IN ('ProdLevel10', 'ProdLevel9', 'ProdLevel8', 'ProdLevel7', 'ProdLevel6PR') THEN 'Business Diversity'
-            WHEN g.AllocationLevelName IN ('ProdLevel5PG', 'ProdLevel4SD', 'ProdLevel3SB', 'ProdLevel2BG') THEN 'Business Invest'
+            WHEN g.AllocationLevelName IN ('LevelProd10', 'LevelProd9', 'LevelProd8', 'LevelProd7', 'LevelProd6PR') THEN 'Business Diversity'
+            WHEN g.AllocationLevelName IN ('LevelProd5PG', 'LevelProd4SD', 'LevelProd3SB', 'LevelProd2BG') THEN 'Business Invest'
             ELSE 'Unclassified'
         END AS AllocationType
     INTO #Allocated
@@ -92,28 +92,28 @@
 		-- Final output: ISIN, full hierarchy, allocated amount
 SELECT 
     l.ISIN,
-    l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
-    l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG,
+    l.LevelProd10, l.LevelProd9, l.LevelProd8, l.LevelProd7, l.LevelProd6PR,
+    l.LevelProd5PG, l.LevelProd4SD, l.LevelProd3SB, l.LevelProd2BG,
     a.AllocatedAmount
 FROM #Allocated a
 JOIN #Labeled l
     ON a.ISIN = l.ISIN 
    AND a.AllocationLevelName = 
         CASE 
-            WHEN l.ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
-            WHEN l.ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
-            WHEN l.ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
-            WHEN l.ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
-            WHEN l.ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
-            WHEN l.ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
-            WHEN l.ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
-            WHEN l.ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
-            WHEN l.ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
+            WHEN l.LevelProd10 IS NOT NULL THEN 'LevelProd10'
+            WHEN l.LevelProd9  IS NOT NULL THEN 'LevelProd9'
+            WHEN l.LevelProd8  IS NOT NULL THEN 'LevelProd8'
+            WHEN l.LevelProd7  IS NOT NULL THEN 'LevelProd7'
+            WHEN l.LevelProd6PR IS NOT NULL THEN 'LevelProd6PR'
+            WHEN l.LevelProd5PG IS NOT NULL THEN 'LevelProd5PG'
+            WHEN l.LevelProd4SD IS NOT NULL THEN 'LevelProd4SD'
+            WHEN l.LevelProd3SB IS NOT NULL THEN 'LevelProd3SB'
+            WHEN l.LevelProd2BG IS NOT NULL THEN 'LevelProd2BG'
             ELSE 'UNKNOWN'
         END
    AND a.AllocationLevelValue = COALESCE(
-            l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
-            l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG, 'UNKNOWN'
+            l.LevelProd10, l.LevelProd9, l.LevelProd8, l.LevelProd7, l.LevelProd6PR,
+            l.LevelProd5PG, l.LevelProd4SD, l.LevelProd3SB, l.LevelProd2BG, 'UNKNOWN'
         )
-ORDER BY l.ISIN, l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7,
-         l.ProdLevel6PR, l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG;
+ORDER BY l.ISIN, l.LevelProd10, l.LevelProd9, l.LevelProd8, l.LevelProd7,
+         l.LevelProd6PR, l.LevelProd5PG, l.LevelProd4SD, l.LevelProd3SB, l.LevelProd2BG;
