@@ -1,120 +1,149 @@
-CREATE PROCEDURE usp_AllocateNettingByHierarchy
-AS
-BEGIN
-    SET NOCOUNT ON;
+-- Final Hierarchical Netting Number Allocation SQL
+-- Allocates netting number from Level 10 down to Level 2 based on max(|TPA|, |TPL|)
+-- Replace table names below with your actual table names
 
-    -- Step 1: Combine TPA and TPL into one temp table
-    IF OBJECT_ID('tempdb..#BusinessBase') IS NOT NULL DROP TABLE #BusinessBase;
-
+WITH base_allocation AS (
     SELECT 
-        ISIN,
-        ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-        ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-        GBPIFRSBalanceSheetAmount,
-        ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
-    INTO #BusinessBase
-    FROM (
-        SELECT * FROM #tpa
-        UNION ALL
-        SELECT * FROM #tpl
-    ) AS Combined;
+        n.isin,
+        n.gbp_netting_number,
+        b.level_path,                    -- Unique hierarchy path (replace with your path column)
+        b.level_number,
+        b.business_name,
+        b.tpa,
+        b.tpl,
+        -- Calculate capacity as maximum of absolute TPA and TPL values
+        GREATEST(ABS(COALESCE(b.tpa, 0)), ABS(COALESCE(b.tpl, 0))) AS max_capacity,
+        -- Tag business types as specified
+        CASE 
+            WHEN b.level_number BETWEEN 5 AND 10 THEN 'business_diversity'
+            WHEN b.level_number BETWEEN 2 AND 4 THEN 'business_invest'
+        END AS business_type
+    FROM netting_table n                 -- Replace with your netting table name
+    JOIN business_hierarchy_table b      -- Replace with your business table name
+      ON n.isin = b.isin
+    WHERE b.level_number BETWEEN 2 AND 10
+),
 
-    -- Step 2: Add allocation level name and value
-    IF OBJECT_ID('tempdb..#Labeled') IS NOT NULL DROP TABLE #Labeled;
-
+allocation_calculation AS (
     SELECT *,
-        CASE 
-            WHEN ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
-            WHEN ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
-            WHEN ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
-            WHEN ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
-            WHEN ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
-            WHEN ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
-            WHEN ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
-            WHEN ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
-            WHEN ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
-            ELSE 'UNKNOWN'
-        END AS AllocationLevelName,
-
+        -- Calculate cumulative capacity from Level 10 down to current level
+        SUM(max_capacity) OVER (
+            PARTITION BY isin, level_path 
+            ORDER BY level_number DESC 
+            ROWS UNBOUNDED PRECEDING
+        ) AS cumulative_capacity,
+        
+        -- Previous cumulative capacity (used to calculate remaining netting)
         COALESCE(
-            ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-            ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG, 'UNKNOWN'
-        ) AS AllocationLevelValue
-    INTO #Labeled
-    FROM #BusinessBase;
+            LAG(SUM(max_capacity) OVER (
+                PARTITION BY isin, level_path 
+                ORDER BY level_number DESC 
+                ROWS UNBOUNDED PRECEDING
+            )) OVER (
+                PARTITION BY isin, level_path 
+                ORDER BY level_number DESC
+            ), 0
+        ) AS previous_cumulative_capacity
+    FROM base_allocation
+    WHERE max_capacity > 0  -- Only consider levels with actual capacity
+),
 
-    -- Step 3: Total abs by ISIN
-    IF OBJECT_ID('tempdb..#ISINTotal') IS NOT NULL DROP TABLE #ISINTotal;
-    SELECT ISIN, SUM(AbsAmount) AS TotalAbsAmount
-    INTO #ISINTotal
-    FROM #Labeled
-    GROUP BY ISIN;
-
-    -- Step 4: Grouped hierarchy amount
-    IF OBJECT_ID('tempdb..#Grouped') IS NOT NULL DROP TABLE #Grouped;
+final_allocation AS (
     SELECT 
-        ISIN,
-        AllocationLevelName,
-        AllocationLevelValue,
-        SUM(AbsAmount) AS GroupAbsAmount
-    INTO #Grouped
-    FROM #Labeled
-    GROUP BY ISIN, AllocationLevelName, AllocationLevelValue;
+        isin,
+        gbp_netting_number,
+        level_path,
+        level_number,
+        business_name,
+        business_type,
+        tpa,
+        tpl,
+        max_capacity,
+        cumulative_capacity,
+        previous_cumulative_capacity,
+        
+        -- Calculate allocated amount for this level
+        CASE 
+            -- If previous levels already consumed all netting, allocate 0
+            WHEN previous_cumulative_capacity >= gbp_netting_number THEN 0
+            -- If cumulative capacity is within netting amount, allocate full capacity
+            WHEN cumulative_capacity <= gbp_netting_number THEN max_capacity
+            -- Otherwise, allocate remaining amount
+            ELSE GREATEST(0, gbp_netting_number - previous_cumulative_capacity)
+        END AS allocated_amount,
+        
+        -- Calculate remaining netting after this allocation
+        GREATEST(0, gbp_netting_number - cumulative_capacity) AS remaining_netting_amount
+    FROM allocation_calculation
+)
 
-    -- Step 5: Final allocation
-    IF OBJECT_ID('tempdb..#Allocated') IS NOT NULL DROP TABLE #Allocated;
-    SELECT 
-        g.ISIN,
-        g.AllocationLevelName,
-        g.AllocationLevelValue,
-        g.GroupAbsAmount,
-        t.TotalAbsAmount,
-        c.GBPIFRSBalanceSheetAmount AS NettingAmount,
-        CASE 
-            WHEN t.TotalAbsAmount = 0 THEN 0
-            ELSE ROUND(g.GroupAbsAmount * c.GBPIFRSBalanceSheetAmount / t.TotalAbsAmount, 2)
-        END AS AllocatedAmount,
-        CASE 
-            WHEN t.TotalAbsAmount = 0 THEN 0
-            ELSE ROUND(g.GroupAbsAmount * 100.0 / t.TotalAbsAmount, 2)
-        END AS PercentOfTotal,
-        -- AllocationType tagging logic
-        CASE 
-            WHEN g.AllocationLevelName IN ('ProdLevel10', 'ProdLevel9', 'ProdLevel8', 'ProdLevel7', 'ProdLevel6PR') THEN 'Business Diversity'
-            WHEN g.AllocationLevelName IN ('ProdLevel5PG', 'ProdLevel4SD', 'ProdLevel3SB', 'ProdLevel2BG') THEN 'Business Invest'
-            ELSE 'Unclassified'
-        END AS AllocationType
-    INTO #Allocated
-    FROM #Grouped g
-    JOIN #ISINTotal t ON g.ISIN = t.ISIN
-    JOIN #cen c ON g.ISIN = c.ISIN;
+-- Main allocation results
+SELECT 
+    isin,
+    level_path,
+    level_number,
+    business_name,
+    business_type,
+    ROUND(tpa, 2) AS tpa,
+    ROUND(tpl, 2) AS tpl,
+    ROUND(max_capacity, 2) AS max_capacity,
+    ROUND(allocated_amount, 2) AS allocated_amount,
+    ROUND(remaining_netting_amount, 2) AS remaining_netting,
+    ROUND((allocated_amount * 100.0) / NULLIF(gbp_netting_number, 0), 2) AS allocation_percentage,
+    ROUND(gbp_netting_number, 2) AS original_netting_number
+FROM final_allocation
+WHERE allocated_amount > 0  -- Only show levels that received allocation
+ORDER BY isin, level_path, level_number DESC;
 
-    -- Step 6: Final output — ISIN, hierarchy, AllocatedAmount
+-- Summary by business type
+WITH business_summary AS (
     SELECT 
-        l.ISIN,
-        l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
-        l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG,
-        a.AllocatedAmount
-    FROM #Allocated a
-    JOIN #Labeled l
-        ON a.ISIN = l.ISIN
-       AND a.AllocationLevelName = 
-            CASE 
-                WHEN l.ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
-                WHEN l.ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
-                WHEN l.ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
-                WHEN l.ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
-                WHEN l.ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
-                WHEN l.ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
-                WHEN l.ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
-                WHEN l.ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
-                WHEN l.ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
-                ELSE 'UNKNOWN'
-            END
-       AND a.AllocationLevelValue = COALESCE(
-            l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
-            l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG, 'UNKNOWN'
-       )
-    ORDER BY l.ISIN, l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7,
-             l.ProdLevel6PR, l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG;
-END;
+        isin,
+        business_type,
+        COUNT(*) AS business_count,
+        SUM(max_capacity) AS total_capacity,
+        SUM(allocated_amount) AS total_allocated,
+        MAX(gbp_netting_number) AS netting_number
+    FROM final_allocation
+    WHERE allocated_amount > 0
+    GROUP BY isin, business_type
+)
+SELECT 
+    'SUMMARY' AS report_type,
+    isin,
+    business_type,
+    business_count,
+    ROUND(total_capacity, 2) AS total_capacity,
+    ROUND(total_allocated, 2) AS total_allocated,
+    ROUND((total_allocated * 100.0) / netting_number, 2) AS type_allocation_percentage
+FROM business_summary
+ORDER BY isin, business_type;
+
+-- Verification totals
+WITH verification AS (
+    SELECT 
+        isin,
+        MAX(gbp_netting_number) AS original_netting,
+        SUM(allocated_amount) AS total_allocated,
+        MAX(gbp_netting_number) - SUM(allocated_amount) AS unallocated_remainder
+    FROM final_allocation
+    GROUP BY isin
+)
+SELECT 
+    'VERIFICATION' AS report_type,
+    isin,
+    ROUND(original_netting, 2) AS original_netting,
+    ROUND(total_allocated, 2) AS total_allocated,
+    ROUND(unallocated_remainder, 2) AS unallocated_remainder,
+    ROUND((total_allocated * 100.0) / original_netting, 2) AS completion_percentage,
+    CASE 
+        WHEN ABS(unallocated_remainder) < 0.01 THEN 'FULLY ALLOCATED ✓'
+        ELSE 'PARTIAL ALLOCATION'
+    END AS status
+FROM verification
+ORDER BY isin;
+
+
+
+----
+
