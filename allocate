@@ -3,7 +3,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Combine TPA and TPL into unified working set
+    -- Combine TPA and TPL into a working set
     IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
 
     SELECT *,
@@ -15,7 +15,7 @@ BEGIN
         SELECT * FROM #tpl
     ) AS combined;
 
-    -- Add a unique path key for grouping
+    -- Add unique path key
     ALTER TABLE #business ADD PathKey VARCHAR(MAX);
 
     UPDATE #business
@@ -30,7 +30,7 @@ BEGIN
         ISNULL(ProdLevel9, '') + ' > ' +
         ISNULL(ProdLevel10, '');
 
-    -- Final journal output (TPA + TPL entries)
+    -- Create final journal output
     IF OBJECT_ID('tempdb..#journal') IS NOT NULL DROP TABLE #journal;
 
     CREATE TABLE #journal (
@@ -57,7 +57,7 @@ BEGIN
 
         WHILE @level >= 2 AND @RemainingCEN > 0
         BEGIN
-            -- Build dynamic grouping expression from current level to 2
+            -- Build dynamic grouping
             DECLARE @cols NVARCHAR(MAX) = '';
             DECLARE @i INT = @level;
 
@@ -77,13 +77,14 @@ BEGIN
                 SET @i -= 1;
             END
 
-            -- Variables to hold selected row
+            -- Variables for selected row
             DECLARE 
                 @AbsAmount FLOAT,
                 @ProdLevel10 VARCHAR(100), @ProdLevel9 VARCHAR(100), @ProdLevel8 VARCHAR(100),
                 @ProdLevel7 VARCHAR(100), @ProdLevel6PR VARCHAR(100), @ProdLevel5PG VARCHAR(100),
                 @ProdLevel4SD VARCHAR(100), @ProdLevel3SB VARCHAR(100), @ProdLevel2BG VARCHAR(100);
 
+            -- Build dynamic query to select top allocation path
             DECLARE @sql NVARCHAR(MAX);
 
             SET @sql = '
@@ -111,46 +112,56 @@ BEGIN
                 @ProdLevel7Out = @ProdLevel7, @ProdLevel6PROut = @ProdLevel6PR, @ProdLevel5PGOut = @ProdLevel5PG,
                 @ProdLevel4SDOut = @ProdLevel4SD, @ProdLevel3SBOut = @ProdLevel3SB, @ProdLevel2BGOut = @ProdLevel2BG;
 
-            -- Allocation logic
-            DECLARE @Alloc FLOAT;
-            SET @Alloc = CASE 
-                            WHEN @AbsAmount < @RemainingCEN THEN @AbsAmount 
-                            ELSE @RemainingCEN 
-                         END;
-
-            IF @Alloc > 0
+            -- Perform allocation only if business levels are valid
+            IF @AbsAmount IS NOT NULL 
+               AND @ProdLevel2BG IS NOT NULL AND @ProdLevel3SB IS NOT NULL
+               AND @ProdLevel4SD IS NOT NULL AND @ProdLevel5PG IS NOT NULL
+               AND @ProdLevel6PR IS NOT NULL AND @ProdLevel10 IS NOT NULL
             BEGIN
-                DECLARE @AllocationType VARCHAR(50) =
-                    CASE 
-                        WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
-                        ELSE 'Business Invest'
-                    END;
+                DECLARE @Alloc FLOAT;
+                SET @Alloc = CASE 
+                                WHEN @AbsAmount < @RemainingCEN THEN @AbsAmount 
+                                ELSE @RemainingCEN 
+                             END;
 
-                -- TPA (+)
-                INSERT INTO #journal (
-                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    JournalType, AllocatedAmount, AllocationType
-                )
-                VALUES (
-                    @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
-                    @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
-                    'TPA', @Alloc, @AllocationType
-                );
+                IF @Alloc > 0
+                BEGIN
+                    DECLARE @AllocationType VARCHAR(50) =
+                        CASE 
+                            WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
+                            ELSE 'Business Invest'
+                        END;
 
-                -- TPL (−)
-                INSERT INTO #journal (
-                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    JournalType, AllocatedAmount, AllocationType
-                )
-                VALUES (
-                    @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
-                    @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
-                    'TPL', -@Alloc, @AllocationType
-                );
+                    -- Insert TPA
+                    INSERT INTO #journal (
+                        ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+                        ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+                        JournalType, AllocatedAmount, AllocationType
+                    )
+                    VALUES (
+                        @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
+                        @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
+                        'TPA', @Alloc, @AllocationType
+                    );
 
-                SET @RemainingCEN = @RemainingCEN - @Alloc;
+                    -- Insert TPL
+                    INSERT INTO #journal (
+                        ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+                        ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+                        JournalType, AllocatedAmount, AllocationType
+                    )
+                    VALUES (
+                        @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
+                        @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
+                        'TPL', -@Alloc, @AllocationType
+                    );
+
+                    SET @RemainingCEN = @RemainingCEN - @Alloc;
+                END
+            END
+            ELSE
+            BEGIN
+                PRINT 'Skipped ISIN: ' + @ISIN + ' at level ' + CAST(@level AS VARCHAR) + ' due to null business hierarchy.';
             END
 
             SET @level = @level - 1;
