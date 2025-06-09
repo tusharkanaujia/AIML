@@ -1,442 +1,9 @@
--- Final Hierarchical Netting Number Allocation SQL
--- Allocates netting number from Level 10 down to Level 2 based on max(|TPA|, |TPL|)
--- Replace table names below with your actual table names
-
-WITH base_allocation AS (
-    SELECT 
-        n.isin,
-        n.gbp_netting_number,
-        b.level_path,                    -- Unique hierarchy path (replace with your path column)
-        b.level_number,
-        b.business_name,
-        b.tpa,
-        b.tpl,
-        -- Calculate capacity as maximum of absolute TPA and TPL values
-        GREATEST(ABS(COALESCE(b.tpa, 0)), ABS(COALESCE(b.tpl, 0))) AS max_capacity,
-        -- Tag business types as specified
-        CASE 
-            WHEN b.level_number BETWEEN 5 AND 10 THEN 'business_diversity'
-            WHEN b.level_number BETWEEN 2 AND 4 THEN 'b weusiness_invest'
-        END AS business_type
-    FROM netting_table n                 -- Replace with your netting table name
-    JOIN business_hierarchy_table b      -- Replace with your business table name
-      ON n.isin = b.isin
-    WHERE b.level_number BETWEEN 2 AND 10
-),
-
-allocation_calculation AS (
-    SELECT *,
-        -- Calculate cumulative capacity from Level 10 down to current level
-        SUM(max_capacity) OVER (
-            PARTITION BY isin, level_path 
-            ORDER BY level_number DESC 
-            ROWS UNBOUNDED PRECEDING
-        ) AS cumulative_capacity,
-        
-        -- Previous cumulative capacity (used to calculate remaining netting)
-        COALESCE(
-            LAG(SUM(max_capacity) OVER (
-                PARTITION BY isin, level_path 
-                ORDER BY level_number DESC 
-                ROWS UNBOUNDED PRECEDING
-            )) OVER (
-                PARTITION BY isin, level_path 
-                ORDER BY level_number DESC
-            ), 0
-        ) AS previous_cumulative_capacity
-    FROM base_allocation
-    WHERE max_capacity > 0  -- Only consider levels with actual capacity
-),
-
-final_allocation AS (
-    SELECT 
-        isin,
-        gbp_netting_number,
-        level_path,
-        level_number,
-        business_name,
-        business_type,
-        tpa,
-        tpl,
-        max_capacity,
-        cumulative_capacity,
-        previous_cumulative_capacity,
-        
-        -- Calculate allocated amount for this level
-        CASE 
-            -- If previous levels already consumed all netting, allocate 0
-            WHEN previous_cumulative_capacity >= gbp_netting_number THEN 0
-            -- If cumulative capacity is within netting amount, allocate full capacity
-            WHEN cumulative_capacity <= gbp_netting_number THEN max_capacity
-            -- Otherwise, allocate remaining amount
-            ELSE GREATEST(0, gbp_netting_number - previous_cumulative_capacity)
-        END AS allocated_amount,
-        
-        -- Calculate remaining netting after this allocation
-        GREATEST(0, gbp_netting_number - cumulative_capacity) AS remaining_netting_amount
-    FROM allocation_calculation
-)
-
--- Main allocation results
-SELECT 
-    isin,
-    level_path,
-    level_number,
-    business_name,
-    business_type,
-    ROUND(tpa, 2) AS tpa,
-    ROUND(tpl, 2) AS tpl,
-    ROUND(max_capacity, 2) AS max_capacity,
-    ROUND(allocated_amount, 2) AS allocated_amount,
-    ROUND(remaining_netting_amount, 2) AS remaining_netting,
-    ROUND((allocated_amount * 100.0) / NULLIF(gbp_netting_number, 0), 2) AS allocation_percentage,
-    ROUND(gbp_netting_number, 2) AS original_netting_number
-FROM final_allocation
-WHERE allocated_amount > 0  -- Only show levels that received allocation
-ORDER BY isin, level_path, level_number DESC;
-
--- Summary by business type
-WITH business_summary AS (
-    SELECT 
-        isin,
-        business_type,
-        COUNT(*) AS business_count,
-        SUM(max_capacity) AS total_capacity,
-        SUM(allocated_amount) AS total_allocated,
-        MAX(gbp_netting_number) AS netting_number
-    FROM final_allocation
-    WHERE allocated_amount > 0
-    GROUP BY isin, business_type
-)
-SELECT 
-    'SUMMARY' AS report_type,
-    isin,
-    business_type,
-    business_count,
-    ROUND(total_capacity, 2) AS total_capacity,
-    ROUND(total_allocated, 2) AS total_allocated,
-    ROUND((total_allocated * 100.0) / netting_number, 2) AS type_allocation_percentage
-FROM business_summary
-ORDER BY isin, business_type;
-
--- Verification totals
-WITH verification AS (
-    SELECT 
-        isin,
-        MAX(gbp_netting_number) AS original_netting,
-        SUM(allocated_amount) AS total_allocated,
-        MAX(gbp_netting_number) - SUM(allocated_amount) AS unallocated_remainder
-    FROM final_allocation
-    GROUP BY isin
-)
-SELECT 
-    'VERIFICATION' AS report_type,
-    isin,
-    ROUND(original_netting, 2) AS original_netting,
-    ROUND(total_allocated, 2) AS total_allocated,
-    ROUND(unallocated_remainder, 2) AS unallocated_remainder,
-    ROUND((total_allocated * 100.0) / original_netting, 2) AS completion_percentage,
-    CASE 
-        WHEN ABS(unallocated_remainder) < 0.01 THEN 'FULLY ALLOCATED ✓'
-        ELSE 'PARTIAL ALLOCATION'
-    END AS status
-FROM verification
-ORDER BY isin;
-
-
-
-----
-
 CREATE PROCEDURE usp_AllocateNettingHierarchically
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
-
-    -- Combine TPA and TPL into unified structure
-    SELECT *,
-        ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
-    INTO #business
-    FROM (
-        SELECT * FROM #tpa
-        UNION ALL
-        SELECT * FROM #tpl
-    ) AS all_data;
-
-    -- Add path keys
-    ALTER TABLE #business ADD PathKey VARCHAR(MAX);
-
-    UPDATE #business
-    SET PathKey = 
-        ISNULL(ProdLevel2BG, '') + ' > ' +
-        ISNULL(ProdLevel3SB, '') + ' > ' +
-        ISNULL(ProdLevel4SD, '') + ' > ' +
-        ISNULL(ProdLevel5PG, '') + ' > ' +
-        ISNULL(ProdLevel6PR, '') + ' > ' +
-        ISNULL(ProdLevel7, '') + ' > ' +
-        ISNULL(ProdLevel8, '') + ' > ' +
-        ISNULL(ProdLevel9, '') + ' > ' +
-        ISNULL(ProdLevel10, '');
-
-    -- Table to hold final results
-    IF OBJECT_ID('tempdb..#allocation') IS NOT NULL DROP TABLE #allocation;
-
-    CREATE TABLE #allocation (
-        ISIN VARCHAR(20),
-        ProdLevel10 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel8 VARCHAR(100),
-        ProdLevel7 VARCHAR(100), ProdLevel6PR VARCHAR(100), ProdLevel5PG VARCHAR(100),
-        ProdLevel4SD VARCHAR(100), ProdLevel3SB VARCHAR(100), ProdLevel2BG VARCHAR(100),
-        AllocatedAmount FLOAT,
-        AllocationType VARCHAR(50)
-    );
-
-    DECLARE @ISIN VARCHAR(20), @RemainingCEN FLOAT;
-
-    DECLARE isin_cursor CURSOR FOR
-    SELECT ISIN, GBPIFRSBalanceSheetAmount FROM #cen;
-
-    OPEN isin_cursor;
-    FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        DECLARE @level INT = 10;
-
-        WHILE @level >= 2 AND @RemainingCEN > 0
-        BEGIN
-            -- Build dynamic grouping key from level to level 2
-            DECLARE @cols NVARCHAR(MAX) = '';
-            DECLARE @i INT = @level;
-
-            WHILE @i >= 2
-            BEGIN
-                SET @cols = @cols + 
-                    CASE WHEN @cols = '' THEN '' ELSE ' + '' > '' + ' END +
-                    'ISNULL(ProdLevel' + 
-                    CASE WHEN @i IN (6, 5) THEN 
-                        CASE @i 
-                            WHEN 6 THEN '6PR'
-                            WHEN 5 THEN '5PG' 
-                        END 
-                    ELSE 
-                        CAST(@i AS VARCHAR) 
-                    END + ', '''')';
-                SET @i = @i - 1;
-            END
-
-            DECLARE @sql NVARCHAR(MAX) = '
-            ;WITH RankedGroups AS (
-                SELECT
-                    PathKey,
-                    MAX(AbsAmount) AS GroupAbsAmount,
-                    ROW_NUMBER() OVER (ORDER BY MAX(AbsAmount) DESC) AS rn
-                FROM #business
-                WHERE ISIN = ''' + @ISIN + '''
-                GROUP BY ' + @cols + '
-            )
-            SELECT TOP 1 b.*
-            FROM RankedGroups r
-            JOIN #business b ON b.PathKey = r.PathKey
-            WHERE r.rn = 1
-            ';
-
-            -- Table to hold selected row
-            IF OBJECT_ID('tempdb..#selected') IS NOT NULL DROP TABLE #selected;
-
-            SET @sql = 'SELECT * INTO #selected FROM (' + @sql + ') AS subquery';
-            EXEC sp_executesql @sql;
-
-            DECLARE @Alloc FLOAT = 0;
-            SELECT TOP 1 @Alloc = MIN(@RemainingCEN, AbsAmount) FROM #selected;
-
-            IF @Alloc > 0
-            BEGIN
-                INSERT INTO #allocation (
-                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    AllocatedAmount, AllocationType
-                )
-                SELECT TOP 1
-                    @ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    @Alloc,
-                    CASE 
-                        WHEN @level >= 5 THEN 'Business Diversity'
-                        ELSE 'Business Invest'
-                    END
-                FROM #selected;
-
-                SET @RemainingCEN = @RemainingCEN - @Alloc;
-            END
-
-            SET @level = @level - 1;
-        END
-
-        FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
-    END
-
-    CLOSE isin_cursor;
-    DEALLOCATE isin_cursor;
-
-    -- Final Output
-    SELECT *
-    FROM #allocation
-    ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
-END;
-
-
-
----
-
-CREATE PROCEDURE usp_AllocateNettingHierarchically
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
-
-    -- Combine TPA and TPL into unified structure
-    SELECT *,
-        ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
-    INTO #business
-    FROM (
-        SELECT * FROM #tpa
-        UNION ALL
-        SELECT * FROM #tpl
-    ) AS all_data;
-
-    -- Add path key from level 2 to 10
-    ALTER TABLE #business ADD PathKey VARCHAR(MAX);
-
-    UPDATE #business
-    SET PathKey = 
-        ISNULL(ProdLevel2BG, '') + ' > ' +
-        ISNULL(ProdLevel3SB, '') + ' > ' +
-        ISNULL(ProdLevel4SD, '') + ' > ' +
-        ISNULL(ProdLevel5PG, '') + ' > ' +
-        ISNULL(ProdLevel6PR, '') + ' > ' +
-        ISNULL(ProdLevel7, '') + ' > ' +
-        ISNULL(ProdLevel8, '') + ' > ' +
-        ISNULL(ProdLevel9, '') + ' > ' +
-        ISNULL(ProdLevel10, '');
-
-    -- Table to hold final results
-    IF OBJECT_ID('tempdb..#allocation') IS NOT NULL DROP TABLE #allocation;
-
-    CREATE TABLE #allocation (
-        ISIN VARCHAR(20),
-        ProdLevel10 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel8 VARCHAR(100),
-        ProdLevel7 VARCHAR(100), ProdLevel6PR VARCHAR(100), ProdLevel5PG VARCHAR(100),
-        ProdLevel4SD VARCHAR(100), ProdLevel3SB VARCHAR(100), ProdLevel2BG VARCHAR(100),
-        AllocatedAmount FLOAT,
-        AllocationType VARCHAR(50)
-    );
-
-    DECLARE @ISIN VARCHAR(20), @RemainingCEN FLOAT;
-
-    DECLARE isin_cursor CURSOR FOR
-    SELECT ISIN, GBPIFRSBalanceSheetAmount FROM #cen;
-
-    OPEN isin_cursor;
-    FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        DECLARE @level INT = 10;
-
-        WHILE @level >= 2 AND @RemainingCEN > 0
-        BEGIN
-            -- Dynamic level column construction
-            DECLARE @cols NVARCHAR(MAX) = '';
-            DECLARE @i INT = @level;
-
-            WHILE @i >= 2
-            BEGIN
-                SET @cols += 
-                    CASE WHEN @cols = '' THEN '' ELSE ' + '' > '' + ' END +
-                    'ISNULL(ProdLevel' +
-                    CASE 
-                        WHEN @i = 6 THEN '6PR'
-                        WHEN @i = 5 THEN '5PG'
-                        ELSE CAST(@i AS VARCHAR)
-                    END + ', '''')';
-                SET @i -= 1;
-            END
-
-            DECLARE @sql NVARCHAR(MAX) = '
-            ;WITH RankedGroups AS (
-                SELECT
-                    PathKey,
-                    MAX(AbsAmount) AS GroupAbsAmount,
-                    ROW_NUMBER() OVER (ORDER BY MAX(AbsAmount) DESC) AS rn
-                FROM #business
-                WHERE ISIN = ''' + @ISIN + '''
-                GROUP BY ' + @cols + '
-            )
-            SELECT TOP 1 b.*
-            FROM RankedGroups r
-            JOIN #business b ON b.PathKey = r.PathKey
-            WHERE r.rn = 1';
-
-            -- Execute dynamic SQL to get top group
-            IF OBJECT_ID('tempdb..#selected') IS NOT NULL DROP TABLE #selected;
-            SET @sql = 'SELECT * INTO #selected FROM (' + @sql + ') AS subquery';
-            EXEC sp_executesql @sql;
-
-            -- Determine allocation using CASE
-            DECLARE @Alloc FLOAT = 0;
-            SELECT TOP 1 @Alloc = 
-                CASE 
-                    WHEN AbsAmount < @RemainingCEN THEN AbsAmount 
-                    ELSE @RemainingCEN 
-                END
-            FROM #selected;
-
-            IF @Alloc > 0
-            BEGIN
-                INSERT INTO #allocation (
-                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    AllocatedAmount, AllocationType
-                )
-                SELECT TOP 1
-                    @ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
-                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    @Alloc,
-                    CASE 
-                        WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
-                        ELSE 'Business Invest'
-                    END
-                FROM #selected;
-
-                SET @RemainingCEN = @RemainingCEN - @Alloc;
-            END
-
-            SET @level = @level - 1;
-        END
-
-        FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
-    END
-
-    CLOSE isin_cursor;
-    DEALLOCATE isin_cursor;
-
-    -- Final output
-    SELECT *
-    FROM #allocation
-    ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
-END;
-
-
---
-
-CREATE PROCEDURE usp_AllocateNettingHierarchically
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Combine TPA and TPL into a working table
+    -- Combine TPA and TPL into working dataset
     IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
 
     SELECT *,
@@ -448,7 +15,7 @@ BEGIN
         SELECT * FROM #tpl
     ) AS combined;
 
-    -- Add path key from level 2 to 10
+    -- Build unique path key for reference
     ALTER TABLE #business ADD PathKey VARCHAR(MAX);
 
     UPDATE #business
@@ -463,7 +30,7 @@ BEGIN
         ISNULL(ProdLevel9, '') + ' > ' +
         ISNULL(ProdLevel10, '');
 
-    -- Final allocation output table
+    -- Final output table
     IF OBJECT_ID('tempdb..#allocation') IS NOT NULL DROP TABLE #allocation;
 
     CREATE TABLE #allocation (
@@ -489,48 +56,48 @@ BEGIN
 
         WHILE @level >= 2 AND @RemainingCEN > 0
         BEGIN
-            -- Build dynamic grouping key from current level to 2
+            -- Build grouping columns dynamically
             DECLARE @cols NVARCHAR(MAX) = '';
             DECLARE @i INT = @level;
 
             WHILE @i >= 2
             BEGIN
-                SET @cols = @cols + 
+                SET @cols += 
                     CASE WHEN @cols = '' THEN '' ELSE ' + '' > '' + ' END +
                     'ISNULL(ProdLevel' +
                     CASE 
                         WHEN @i = 6 THEN '6PR'
                         WHEN @i = 5 THEN '5PG'
+                        WHEN @i = 4 THEN '4SD'
+                        WHEN @i = 3 THEN '3SB'
+                        WHEN @i = 2 THEN '2BG'
                         ELSE CAST(@i AS VARCHAR)
                     END + ', '''')';
-                SET @i = @i - 1;
+                SET @i -= 1;
             END
 
-            -- Dynamic SQL to extract top record by AbsAmount
+            -- Output variables for allocation row
             DECLARE 
-                @sql NVARCHAR(MAX),
                 @AbsAmount FLOAT,
                 @ProdLevel10 VARCHAR(100), @ProdLevel9 VARCHAR(100), @ProdLevel8 VARCHAR(100),
                 @ProdLevel7 VARCHAR(100), @ProdLevel6PR VARCHAR(100), @ProdLevel5PG VARCHAR(100),
                 @ProdLevel4SD VARCHAR(100), @ProdLevel3SB VARCHAR(100), @ProdLevel2BG VARCHAR(100);
 
+            -- Build and execute dynamic SQL to fetch top group by AbsAmount
+            DECLARE @sql NVARCHAR(MAX);
+
             SET @sql = '
             SELECT TOP 1
-                @AbsAmountOut = AbsAmount,
+                @AbsAmountOut = SUM(AbsAmount),
                 @ProdLevel10Out = ProdLevel10, @ProdLevel9Out = ProdLevel9, @ProdLevel8Out = ProdLevel8,
                 @ProdLevel7Out = ProdLevel7, @ProdLevel6PROut = ProdLevel6PR, @ProdLevel5PGOut = ProdLevel5PG,
                 @ProdLevel4SDOut = ProdLevel4SD, @ProdLevel3SBOut = ProdLevel3SB, @ProdLevel2BGOut = ProdLevel2BG
-            FROM (
-                SELECT *,
-                    ROW_NUMBER() OVER (ORDER BY SUM(AbsAmount) DESC) AS rn
-                FROM #business
-                WHERE ISIN = @ISINInput
-                GROUP BY ' + @cols + ',
-                         ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7,
-                         ProdLevel6PR, ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                         AbsAmount
-            ) AS ranked
-            WHERE rn = 1';
+            FROM #business
+            WHERE ISIN = @ISINInput
+            GROUP BY ' + @cols + ',
+                     ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7,
+                     ProdLevel6PR, ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG
+            ORDER BY SUM(AbsAmount) DESC';
 
             EXEC sp_executesql @sql,
                 N'@ISINInput VARCHAR(20),
@@ -544,6 +111,7 @@ BEGIN
                 @ProdLevel7Out = @ProdLevel7, @ProdLevel6PROut = @ProdLevel6PR, @ProdLevel5PGOut = @ProdLevel5PG,
                 @ProdLevel4SDOut = @ProdLevel4SD, @ProdLevel3SBOut = @ProdLevel3SB, @ProdLevel2BGOut = @ProdLevel2BG;
 
+            -- Allocate from remaining CEN
             DECLARE @Alloc FLOAT;
             SET @Alloc = CASE 
                             WHEN @AbsAmount < @RemainingCEN THEN @AbsAmount 
@@ -579,7 +147,7 @@ BEGIN
     CLOSE isin_cursor;
     DEALLOCATE isin_cursor;
 
-    -- Final result
+    -- Final output
     SELECT *
     FROM #allocation
     ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
