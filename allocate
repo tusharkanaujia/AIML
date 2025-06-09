@@ -1,11 +1,9 @@
-CREATE PROCEDURE sp_AllocateCrossNetting
-    @ISIN VARCHAR(20),
-    @NettingAmount DECIMAL(18, 2)
+CREATE PROCEDURE sp_AllocateCrossNetting_MultiISIN
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Temp tables for TPA and TPL journal entries
+    -- Final output tables
     IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
     IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
 
@@ -20,6 +18,7 @@ BEGIN
         ProdLevel8 VARCHAR(100),
         ProdLevel9 VARCHAR(100),
         ProdLevel10 VARCHAR(100),
+        ProdLevel11 VARCHAR(100),
         AllocatedAmount DECIMAL(18,2)
     );
 
@@ -34,155 +33,315 @@ BEGIN
         ProdLevel8 VARCHAR(100),
         ProdLevel9 VARCHAR(100),
         ProdLevel10 VARCHAR(100),
+        ProdLevel11 VARCHAR(100),
         AllocatedAmount DECIMAL(18,2)
     );
 
-    DECLARE @RunningTPA DECIMAL(18,2) = 0;
-    DECLARE @RunningTPL DECIMAL(18,2) = 0;
+    DECLARE @ISIN VARCHAR(20);
+    DECLARE @NettingAmount DECIMAL(18,2);
 
-    -------------------------------
-    -- Allocate to TPA Journal
-    -------------------------------
-    INSERT INTO #Journal_TPA
-    SELECT TOP 100 PERCENT
-        ISIN,
-        ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-        ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10,
-        0 -- placeholder
-    FROM BusinessDetails
-    WHERE ISIN = @ISIN AND Type = 'TPA'
-    ORDER BY 
-        CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-             WHEN ProdLevel9 IS NOT NULL THEN 2
-             WHEN ProdLevel8 IS NOT NULL THEN 3
-             WHEN ProdLevel7 IS NOT NULL THEN 4
-             WHEN ProdLevel6 IS NOT NULL THEN 5
-             WHEN ProdLevel5 IS NOT NULL THEN 6
-             WHEN ProdLevel4 IS NOT NULL THEN 7
-             WHEN ProdLevel3 IS NOT NULL THEN 8
-             WHEN ProdLevel2 IS NOT NULL THEN 9
-             ELSE 10 END;
+    DECLARE ISIN_CURSOR CURSOR FOR
+        SELECT ISIN, GBPIFRSBalanceSheetAmount
+        FROM CrossNetting;
 
-    DECLARE @RowId INT = 1;
-    DECLARE @TPA_TotalRows INT = (SELECT COUNT(*) FROM #Journal_TPA);
+    OPEN ISIN_CURSOR;
+    FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
 
-    WHILE @RowId <= @TPA_TotalRows AND @RunningTPA < @NettingAmount
+    WHILE @@FETCH_STATUS = 0
     BEGIN
-        DECLARE @CurrentAmount DECIMAL(18,2);
-        SELECT @CurrentAmount = ABS(d.TotalAmount)
-        FROM (
-            SELECT ROW_NUMBER() OVER (ORDER BY 
-                CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-                     WHEN ProdLevel9 IS NOT NULL THEN 2
-                     WHEN ProdLevel8 IS NOT NULL THEN 3
-                     ELSE 10 END
-            ) AS RowNum, TotalAmount
-            FROM BusinessDetails
-            WHERE ISIN = @ISIN AND Type = 'TPA'
-        ) d
-        WHERE d.RowNum = @RowId;
+        -- Temp working tables
+        IF OBJECT_ID('tempdb..#TempTPA') IS NOT NULL DROP TABLE #TempTPA;
+        IF OBJECT_ID('tempdb..#TempTPL') IS NOT NULL DROP TABLE #TempTPL;
 
-        DECLARE @AllocAmount DECIMAL(18,2) = 
-            CASE 
-                WHEN @RunningTPA + @CurrentAmount <= @NettingAmount THEN @CurrentAmount
-                ELSE @NettingAmount - @RunningTPA
-            END;
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY 
+                CASE 
+                    WHEN ProdLevel11 IS NOT NULL THEN 1
+                    WHEN ProdLevel10 IS NOT NULL THEN 2
+                    WHEN ProdLevel9 IS NOT NULL THEN 3
+                    WHEN ProdLevel8 IS NOT NULL THEN 4
+                    WHEN ProdLevel7 IS NOT NULL THEN 5
+                    WHEN ProdLevel6 IS NOT NULL THEN 6
+                    WHEN ProdLevel5 IS NOT NULL THEN 7
+                    WHEN ProdLevel4 IS NOT NULL THEN 8
+                    WHEN ProdLevel3 IS NOT NULL THEN 9
+                    WHEN ProdLevel2 IS NOT NULL THEN 10
+                    ELSE 11 
+                END
+        ) AS RowNum
+        INTO #TempTPA
+        FROM BusinessDetails
+        WHERE ISIN = @ISIN AND Type = 'TPA';
 
-        UPDATE j
-        SET AllocatedAmount = @AllocAmount
-        FROM (
-            SELECT ROW_NUMBER() OVER (ORDER BY 
-                CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-                     WHEN ProdLevel9 IS NOT NULL THEN 2
-                     WHEN ProdLevel8 IS NOT NULL THEN 3
-                     ELSE 10 END
-            ) AS RowNum, *
-            FROM #Journal_TPA
-        ) j
-        WHERE j.RowNum = @RowId;
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY 
+                CASE 
+                    WHEN ProdLevel11 IS NOT NULL THEN 1
+                    WHEN ProdLevel10 IS NOT NULL THEN 2
+                    WHEN ProdLevel9 IS NOT NULL THEN 3
+                    WHEN ProdLevel8 IS NOT NULL THEN 4
+                    WHEN ProdLevel7 IS NOT NULL THEN 5
+                    WHEN ProdLevel6 IS NOT NULL THEN 6
+                    WHEN ProdLevel5 IS NOT NULL THEN 7
+                    WHEN ProdLevel4 IS NOT NULL THEN 8
+                    WHEN ProdLevel3 IS NOT NULL THEN 9
+                    WHEN ProdLevel2 IS NOT NULL THEN 10
+                    ELSE 11 
+                END
+        ) AS RowNum
+        INTO #TempTPL
+        FROM BusinessDetails
+        WHERE ISIN = @ISIN AND Type = 'TPL';
 
-        SET @RunningTPA += @AllocAmount;
-        SET @RowId += 1;
+        -- TPA Allocation
+        DECLARE @RunningTPA DECIMAL(18,2) = 0;
+        DECLARE @Row INT = 1;
+        DECLARE @TotalRows INT = (SELECT COUNT(*) FROM #TempTPA);
+
+        WHILE @Row <= @TotalRows AND @RunningTPA < @NettingAmount
+        BEGIN
+            DECLARE @TPAAmount DECIMAL(18,2);
+            SELECT @TPAAmount = ABS(TotalAmount) FROM #TempTPA WHERE RowNum = @Row;
+
+            DECLARE @AllocAmount DECIMAL(18,2) =
+                CASE
+                    WHEN @RunningTPA + @TPAAmount <= @NettingAmount THEN @TPAAmount
+                    ELSE @NettingAmount - @RunningTPA
+                END;
+
+            INSERT INTO #Journal_TPA
+            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
+                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+                   @AllocAmount
+            FROM #TempTPA
+            WHERE RowNum = @Row AND @AllocAmount > 0;
+
+            SET @RunningTPA += @AllocAmount;
+            SET @Row += 1;
+        END
+
+        -- TPL Allocation
+        DECLARE @RunningTPL DECIMAL(18,2) = 0;
+        SET @Row = 1;
+        SET @TotalRows = (SELECT COUNT(*) FROM #TempTPL);
+
+        WHILE @Row <= @TotalRows AND @RunningTPL < @NettingAmount
+        BEGIN
+            DECLARE @TPLAmount DECIMAL(18,2);
+            SELECT @TPLAmount = ABS(TotalAmount) FROM #TempTPL WHERE RowNum = @Row;
+
+            DECLARE @AllocAmount_TPL DECIMAL(18,2) =
+                CASE
+                    WHEN @RunningTPL + @TPLAmount <= @NettingAmount THEN @TPLAmount
+                    ELSE @NettingAmount - @RunningTPL
+                END;
+
+            INSERT INTO #Journal_TPL
+            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
+                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+                   -@AllocAmount_TPL
+            FROM #TempTPL
+            WHERE RowNum = @Row AND @AllocAmount_TPL > 0;
+
+            SET @RunningTPL += @AllocAmount_TPL;
+            SET @Row += 1;
+        END
+
+        FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
     END
 
-    -------------------------------
-    -- Allocate to TPL Journal
-    -------------------------------
-    SET @RowId = 1;
-    DECLARE @TPL_TotalRows INT = (SELECT COUNT(*) FROM BusinessDetails WHERE ISIN = @ISIN AND Type = 'TPL');
+    CLOSE ISIN_CURSOR;
+    DEALLOCATE ISIN_CURSOR;
 
-    INSERT INTO #Journal_TPL
-    SELECT TOP 100 PERCENT
-        ISIN,
-        ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-        ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10,
-        0 -- placeholder
-    FROM BusinessDetails
-    WHERE ISIN = @ISIN AND Type = 'TPL'
-    ORDER BY 
-        CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-             WHEN ProdLevel9 IS NOT NULL THEN 2
-             WHEN ProdLevel8 IS NOT NULL THEN 3
-             WHEN ProdLevel7 IS NOT NULL THEN 4
-             WHEN ProdLevel6 IS NOT NULL THEN 5
-             WHEN ProdLevel5 IS NOT NULL THEN 6
-             WHEN ProdLevel4 IS NOT NULL THEN 7
-             WHEN ProdLevel3 IS NOT NULL THEN 8
-             WHEN ProdLevel2 IS NOT NULL THEN 9
-             ELSE 10 END;
+    -- Final output
+    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
+    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
+END
 
-    WHILE @RowId <= @TPL_TotalRows AND @RunningTPL < @NettingAmount
+
+-----------------
+
+CREATE PROCEDURE sp_AllocateCrossNetting_MultiISIN
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
+    IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
+
+    CREATE TABLE #Journal_TPA (
+        ISIN VARCHAR(20),
+        ProdLevel2 VARCHAR(100),
+        ProdLevel3 VARCHAR(100),
+        ProdLevel4 VARCHAR(100),
+        ProdLevel5 VARCHAR(100),
+        ProdLevel6 VARCHAR(100),
+        ProdLevel7 VARCHAR(100),
+        ProdLevel8 VARCHAR(100),
+        ProdLevel9 VARCHAR(100),
+        ProdLevel10 VARCHAR(100),
+        ProdLevel11 VARCHAR(100),
+        AllocatedAmount DECIMAL(18,2),
+        BalanceSource VARCHAR(100)
+    );
+
+    CREATE TABLE #Journal_TPL (
+        ISIN VARCHAR(20),
+        ProdLevel2 VARCHAR(100),
+        ProdLevel3 VARCHAR(100),
+        ProdLevel4 VARCHAR(100),
+        ProdLevel5 VARCHAR(100),
+        ProdLevel6 VARCHAR(100),
+        ProdLevel7 VARCHAR(100),
+        ProdLevel8 VARCHAR(100),
+        ProdLevel9 VARCHAR(100),
+        ProdLevel10 VARCHAR(100),
+        ProdLevel11 VARCHAR(100),
+        AllocatedAmount DECIMAL(18,2),
+        BalanceSource VARCHAR(100)
+    );
+
+    DECLARE @ISIN VARCHAR(20);
+    DECLARE @NettingAmount DECIMAL(18,2);
+
+    DECLARE ISIN_CURSOR CURSOR FOR
+        SELECT ISIN, GBPIFRSBalanceSheetAmount FROM CrossNetting;
+
+    OPEN ISIN_CURSOR;
+    FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
+
+    WHILE @@FETCH_STATUS = 0
     BEGIN
-        DECLARE @CurrentAmount_TPL DECIMAL(18,2);
-        SELECT @CurrentAmount_TPL = ABS(d.TotalAmount)
-        FROM (
-            SELECT ROW_NUMBER() OVER (ORDER BY 
-                CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-                     WHEN ProdLevel9 IS NOT NULL THEN 2
-                     WHEN ProdLevel8 IS NOT NULL THEN 3
-                     ELSE 10 END
-            ) AS RowNum, TotalAmount
-            FROM BusinessDetails
-            WHERE ISIN = @ISIN AND Type = 'TPL'
-        ) d
-        WHERE d.RowNum = @RowId;
+        IF OBJECT_ID('tempdb..#TempTPA') IS NOT NULL DROP TABLE #TempTPA;
+        IF OBJECT_ID('tempdb..#TempTPL') IS NOT NULL DROP TABLE #TempTPL;
 
-        DECLARE @AllocAmount_TPL DECIMAL(18,2) = 
-            CASE 
-                WHEN @RunningTPL + @CurrentAmount_TPL <= @NettingAmount THEN @CurrentAmount_TPL
-                ELSE @NettingAmount - @RunningTPL
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY 
+                CASE 
+                    WHEN ProdLevel11 IS NOT NULL THEN 1
+                    WHEN ProdLevel10 IS NOT NULL THEN 2
+                    WHEN ProdLevel9 IS NOT NULL THEN 3
+                    WHEN ProdLevel8 IS NOT NULL THEN 4
+                    WHEN ProdLevel7 IS NOT NULL THEN 5
+                    WHEN ProdLevel6 IS NOT NULL THEN 6
+                    WHEN ProdLevel5 IS NOT NULL THEN 7
+                    WHEN ProdLevel4 IS NOT NULL THEN 8
+                    WHEN ProdLevel3 IS NOT NULL THEN 9
+                    WHEN ProdLevel2 IS NOT NULL THEN 10
+                    ELSE 11 
+                END
+        ) AS RowNum
+        INTO #TempTPA
+        FROM BusinessDetails
+        WHERE ISIN = @ISIN AND Type = 'TPA';
+
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY 
+                CASE 
+                    WHEN ProdLevel11 IS NOT NULL THEN 1
+                    WHEN ProdLevel10 IS NOT NULL THEN 2
+                    WHEN ProdLevel9 IS NOT NULL THEN 3
+                    WHEN ProdLevel8 IS NOT NULL THEN 4
+                    WHEN ProdLevel7 IS NOT NULL THEN 5
+                    WHEN ProdLevel6 IS NOT NULL THEN 6
+                    WHEN ProdLevel5 IS NOT NULL THEN 7
+                    WHEN ProdLevel4 IS NOT NULL THEN 8
+                    WHEN ProdLevel3 IS NOT NULL THEN 9
+                    WHEN ProdLevel2 IS NOT NULL THEN 10
+                    ELSE 11 
+                END
+        ) AS RowNum
+        INTO #TempTPL
+        FROM BusinessDetails
+        WHERE ISIN = @ISIN AND Type = 'TPL';
+
+        -- TPA Allocation
+        DECLARE @RunningTPA DECIMAL(18,2) = 0;
+        DECLARE @Row INT = 1;
+        DECLARE @TotalRows INT = (SELECT COUNT(*) FROM #TempTPA);
+
+        WHILE @Row <= @TotalRows AND @RunningTPA < @NettingAmount
+        BEGIN
+            DECLARE @TPAAmount DECIMAL(18,2);
+            SELECT @TPAAmount = ABS(TotalAmount) FROM #TempTPA WHERE RowNum = @Row;
+
+            DECLARE @AllocAmount DECIMAL(18,2) =
+                CASE
+                    WHEN @RunningTPA + @TPAAmount <= @NettingAmount THEN @TPAAmount
+                    ELSE @NettingAmount - @RunningTPA
+                END;
+
+            DECLARE @P2 VARCHAR(100), @P3 VARCHAR(100), @P4 VARCHAR(100), @BalanceSource VARCHAR(100);
+            SELECT @P2 = ProdLevel2, @P3 = ProdLevel3, @P4 = ProdLevel4
+            FROM #TempTPA WHERE RowNum = @Row;
+
+            SET @BalanceSource = CASE
+                WHEN @P4 IS NOT NULL AND (@P3 IS NOT NULL AND @P2 IS NOT NULL) THEN 'Cross Entity - Business and Diversified'
+                WHEN @P4 IS NOT NULL THEN 'Cross Entity - Business'
+                WHEN @P3 IS NOT NULL THEN 'Cross Entity - Diversified'
+                ELSE NULL
             END;
 
-        UPDATE j
-        SET AllocatedAmount = -@AllocAmount_TPL
-        FROM (
-            SELECT ROW_NUMBER() OVER (ORDER BY 
-                CASE WHEN ProdLevel10 IS NOT NULL THEN 1
-                     WHEN ProdLevel9 IS NOT NULL THEN 2
-                     WHEN ProdLevel8 IS NOT NULL THEN 3
-                     ELSE 10 END
-            ) AS RowNum, *
-            FROM #Journal_TPL
-        ) j
-        WHERE j.RowNum = @RowId;
+            INSERT INTO #Journal_TPA
+            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
+                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+                   @AllocAmount, @BalanceSource
+            FROM #TempTPA
+            WHERE RowNum = @Row AND @AllocAmount > 0;
 
-        SET @RunningTPL += @AllocAmount_TPL;
-        SET @RowId += 1;
+            SET @RunningTPA += @AllocAmount;
+            SET @Row += 1;
+        END
+
+        -- TPL Allocation
+        DECLARE @RunningTPL DECIMAL(18,2) = 0;
+        SET @Row = 1;
+        SET @TotalRows = (SELECT COUNT(*) FROM #TempTPL);
+
+        WHILE @Row <= @TotalRows AND @RunningTPL < @NettingAmount
+        BEGIN
+            DECLARE @TPLAmount DECIMAL(18,2);
+            SELECT @TPLAmount = ABS(TotalAmount) FROM #TempTPL WHERE RowNum = @Row;
+
+            DECLARE @AllocAmount_TPL DECIMAL(18,2) =
+                CASE
+                    WHEN @RunningTPL + @TPLAmount <= @NettingAmount THEN @TPLAmount
+                    ELSE @NettingAmount - @RunningTPL
+                END;
+
+            DECLARE @P2_TPL VARCHAR(100), @P3_TPL VARCHAR(100), @P4_TPL VARCHAR(100), @BalanceSource_TPL VARCHAR(100);
+            SELECT @P2_TPL = ProdLevel2, @P3_TPL = ProdLevel3, @P4_TPL = ProdLevel4
+            FROM #TempTPL WHERE RowNum = @Row;
+
+            SET @BalanceSource_TPL = CASE
+                WHEN @P4_TPL IS NOT NULL AND (@P3_TPL IS NOT NULL AND @P2_TPL IS NOT NULL) THEN 'Cross Entity - Business and Diversified'
+                WHEN @P4_TPL IS NOT NULL THEN 'Cross Entity - Business'
+                WHEN @P3_TPL IS NOT NULL THEN 'Cross Entity - Diversified'
+                ELSE NULL
+            END;
+
+            INSERT INTO #Journal_TPL
+            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
+                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+                   -@AllocAmount_TPL, @BalanceSource_TPL
+            FROM #TempTPL
+            WHERE RowNum = @Row AND @AllocAmount_TPL > 0;
+
+            SET @RunningTPL += @AllocAmount_TPL;
+            SET @Row += 1;
+        END
+
+        FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
     END
 
-    -------------------------------
-    -- Final Output
-    -------------------------------
-    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA WHERE AllocatedAmount > 0;
-    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL WHERE AllocatedAmount < 0;
+    CLOSE ISIN_CURSOR;
+    DEALLOCATE ISIN_CURSOR;
 
+    -- Final output
+    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
+    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
 END
 
 
 
 
-
--- 5. Run the stored procedure
-EXEC sp_AllocateCrossNetting 
-    @ISIN = 'CH0012221716', 
-    @NettingAmount = 6964368;
