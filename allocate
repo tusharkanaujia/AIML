@@ -1,9 +1,9 @@
-CREATE PROCEDURE usp_AllocateNettingHierarchically
+CREATE PROCEDURE usp_AllocateNettingJournal
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Combine TPA and TPL into working dataset
+    -- Combine TPA and TPL into unified working set
     IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
 
     SELECT *,
@@ -15,7 +15,7 @@ BEGIN
         SELECT * FROM #tpl
     ) AS combined;
 
-    -- Build unique path key for reference
+    -- Add a unique path key for grouping
     ALTER TABLE #business ADD PathKey VARCHAR(MAX);
 
     UPDATE #business
@@ -30,14 +30,15 @@ BEGIN
         ISNULL(ProdLevel9, '') + ' > ' +
         ISNULL(ProdLevel10, '');
 
-    -- Final output table
-    IF OBJECT_ID('tempdb..#allocation') IS NOT NULL DROP TABLE #allocation;
+    -- Final journal output (TPA + TPL entries)
+    IF OBJECT_ID('tempdb..#journal') IS NOT NULL DROP TABLE #journal;
 
-    CREATE TABLE #allocation (
+    CREATE TABLE #journal (
         ISIN VARCHAR(20),
         ProdLevel10 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel8 VARCHAR(100),
         ProdLevel7 VARCHAR(100), ProdLevel6PR VARCHAR(100), ProdLevel5PG VARCHAR(100),
         ProdLevel4SD VARCHAR(100), ProdLevel3SB VARCHAR(100), ProdLevel2BG VARCHAR(100),
+        JournalType VARCHAR(3),  -- TPA or TPL
         AllocatedAmount FLOAT,
         AllocationType VARCHAR(50)
     );
@@ -56,7 +57,7 @@ BEGIN
 
         WHILE @level >= 2 AND @RemainingCEN > 0
         BEGIN
-            -- Build grouping columns dynamically
+            -- Build dynamic grouping expression from current level to 2
             DECLARE @cols NVARCHAR(MAX) = '';
             DECLARE @i INT = @level;
 
@@ -76,14 +77,13 @@ BEGIN
                 SET @i -= 1;
             END
 
-            -- Output variables for allocation row
+            -- Variables to hold selected row
             DECLARE 
                 @AbsAmount FLOAT,
                 @ProdLevel10 VARCHAR(100), @ProdLevel9 VARCHAR(100), @ProdLevel8 VARCHAR(100),
                 @ProdLevel7 VARCHAR(100), @ProdLevel6PR VARCHAR(100), @ProdLevel5PG VARCHAR(100),
                 @ProdLevel4SD VARCHAR(100), @ProdLevel3SB VARCHAR(100), @ProdLevel2BG VARCHAR(100);
 
-            -- Build and execute dynamic SQL to fetch top group by AbsAmount
             DECLARE @sql NVARCHAR(MAX);
 
             SET @sql = '
@@ -111,7 +111,7 @@ BEGIN
                 @ProdLevel7Out = @ProdLevel7, @ProdLevel6PROut = @ProdLevel6PR, @ProdLevel5PGOut = @ProdLevel5PG,
                 @ProdLevel4SDOut = @ProdLevel4SD, @ProdLevel3SBOut = @ProdLevel3SB, @ProdLevel2BGOut = @ProdLevel2BG;
 
-            -- Allocate from remaining CEN
+            -- Allocation logic
             DECLARE @Alloc FLOAT;
             SET @Alloc = CASE 
                             WHEN @AbsAmount < @RemainingCEN THEN @AbsAmount 
@@ -120,19 +120,34 @@ BEGIN
 
             IF @Alloc > 0
             BEGIN
-                INSERT INTO #allocation (
+                DECLARE @AllocationType VARCHAR(50) =
+                    CASE 
+                        WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
+                        ELSE 'Business Invest'
+                    END;
+
+                -- TPA (+)
+                INSERT INTO #journal (
                     ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
                     ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
-                    AllocatedAmount, AllocationType
+                    JournalType, AllocatedAmount, AllocationType
                 )
                 VALUES (
                     @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
                     @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
-                    @Alloc,
-                    CASE 
-                        WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
-                        ELSE 'Business Invest'
-                    END
+                    'TPA', @Alloc, @AllocationType
+                );
+
+                -- TPL (−)
+                INSERT INTO #journal (
+                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+                    JournalType, AllocatedAmount, AllocationType
+                )
+                VALUES (
+                    @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
+                    @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
+                    'TPL', -@Alloc, @AllocationType
                 );
 
                 SET @RemainingCEN = @RemainingCEN - @Alloc;
@@ -147,8 +162,8 @@ BEGIN
     CLOSE isin_cursor;
     DEALLOCATE isin_cursor;
 
-    -- Final output
+    -- Final journal output
     SELECT *
-    FROM #allocation
-    ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
+    FROM #journal
+    ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10, JournalType;
 END;
