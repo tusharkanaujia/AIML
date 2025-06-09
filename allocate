@@ -178,3 +178,4 @@ BEGIN
     FROM #journal
     ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10, JournalType;
 END;
+
