@@ -427,3 +427,160 @@ BEGIN
     FROM #allocation
     ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
 END;
+
+
+--
+
+CREATE PROCEDURE usp_AllocateNettingHierarchically
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Combine TPA and TPL into a working table
+    IF OBJECT_ID('tempdb..#business') IS NOT NULL DROP TABLE #business;
+
+    SELECT *,
+        ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
+    INTO #business
+    FROM (
+        SELECT * FROM #tpa
+        UNION ALL
+        SELECT * FROM #tpl
+    ) AS combined;
+
+    -- Add path key from level 2 to 10
+    ALTER TABLE #business ADD PathKey VARCHAR(MAX);
+
+    UPDATE #business
+    SET PathKey = 
+        ISNULL(ProdLevel2BG, '') + ' > ' +
+        ISNULL(ProdLevel3SB, '') + ' > ' +
+        ISNULL(ProdLevel4SD, '') + ' > ' +
+        ISNULL(ProdLevel5PG, '') + ' > ' +
+        ISNULL(ProdLevel6PR, '') + ' > ' +
+        ISNULL(ProdLevel7, '') + ' > ' +
+        ISNULL(ProdLevel8, '') + ' > ' +
+        ISNULL(ProdLevel9, '') + ' > ' +
+        ISNULL(ProdLevel10, '');
+
+    -- Final allocation output table
+    IF OBJECT_ID('tempdb..#allocation') IS NOT NULL DROP TABLE #allocation;
+
+    CREATE TABLE #allocation (
+        ISIN VARCHAR(20),
+        ProdLevel10 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel8 VARCHAR(100),
+        ProdLevel7 VARCHAR(100), ProdLevel6PR VARCHAR(100), ProdLevel5PG VARCHAR(100),
+        ProdLevel4SD VARCHAR(100), ProdLevel3SB VARCHAR(100), ProdLevel2BG VARCHAR(100),
+        AllocatedAmount FLOAT,
+        AllocationType VARCHAR(50)
+    );
+
+    DECLARE @ISIN VARCHAR(20), @RemainingCEN FLOAT;
+
+    DECLARE isin_cursor CURSOR FOR
+    SELECT ISIN, GBPIFRSBalanceSheetAmount FROM #cen;
+
+    OPEN isin_cursor;
+    FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        DECLARE @level INT = 10;
+
+        WHILE @level >= 2 AND @RemainingCEN > 0
+        BEGIN
+            -- Build dynamic grouping key from current level to 2
+            DECLARE @cols NVARCHAR(MAX) = '';
+            DECLARE @i INT = @level;
+
+            WHILE @i >= 2
+            BEGIN
+                SET @cols = @cols + 
+                    CASE WHEN @cols = '' THEN '' ELSE ' + '' > '' + ' END +
+                    'ISNULL(ProdLevel' +
+                    CASE 
+                        WHEN @i = 6 THEN '6PR'
+                        WHEN @i = 5 THEN '5PG'
+                        ELSE CAST(@i AS VARCHAR)
+                    END + ', '''')';
+                SET @i = @i - 1;
+            END
+
+            -- Dynamic SQL to extract top record by AbsAmount
+            DECLARE 
+                @sql NVARCHAR(MAX),
+                @AbsAmount FLOAT,
+                @ProdLevel10 VARCHAR(100), @ProdLevel9 VARCHAR(100), @ProdLevel8 VARCHAR(100),
+                @ProdLevel7 VARCHAR(100), @ProdLevel6PR VARCHAR(100), @ProdLevel5PG VARCHAR(100),
+                @ProdLevel4SD VARCHAR(100), @ProdLevel3SB VARCHAR(100), @ProdLevel2BG VARCHAR(100);
+
+            SET @sql = '
+            SELECT TOP 1
+                @AbsAmountOut = AbsAmount,
+                @ProdLevel10Out = ProdLevel10, @ProdLevel9Out = ProdLevel9, @ProdLevel8Out = ProdLevel8,
+                @ProdLevel7Out = ProdLevel7, @ProdLevel6PROut = ProdLevel6PR, @ProdLevel5PGOut = ProdLevel5PG,
+                @ProdLevel4SDOut = ProdLevel4SD, @ProdLevel3SBOut = ProdLevel3SB, @ProdLevel2BGOut = ProdLevel2BG
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (ORDER BY SUM(AbsAmount) DESC) AS rn
+                FROM #business
+                WHERE ISIN = @ISINInput
+                GROUP BY ' + @cols + ',
+                         ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7,
+                         ProdLevel6PR, ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+                         AbsAmount
+            ) AS ranked
+            WHERE rn = 1';
+
+            EXEC sp_executesql @sql,
+                N'@ISINInput VARCHAR(20),
+                  @AbsAmountOut FLOAT OUTPUT,
+                  @ProdLevel10Out VARCHAR(100), @ProdLevel9Out VARCHAR(100), @ProdLevel8Out VARCHAR(100),
+                  @ProdLevel7Out VARCHAR(100), @ProdLevel6PROut VARCHAR(100), @ProdLevel5PGOut VARCHAR(100),
+                  @ProdLevel4SDOut VARCHAR(100), @ProdLevel3SBOut VARCHAR(100), @ProdLevel2BGOut VARCHAR(100)',
+                @ISINInput = @ISIN,
+                @AbsAmountOut = @AbsAmount OUTPUT,
+                @ProdLevel10Out = @ProdLevel10, @ProdLevel9Out = @ProdLevel9, @ProdLevel8Out = @ProdLevel8,
+                @ProdLevel7Out = @ProdLevel7, @ProdLevel6PROut = @ProdLevel6PR, @ProdLevel5PGOut = @ProdLevel5PG,
+                @ProdLevel4SDOut = @ProdLevel4SD, @ProdLevel3SBOut = @ProdLevel3SB, @ProdLevel2BGOut = @ProdLevel2BG;
+
+            DECLARE @Alloc FLOAT;
+            SET @Alloc = CASE 
+                            WHEN @AbsAmount < @RemainingCEN THEN @AbsAmount 
+                            ELSE @RemainingCEN 
+                         END;
+
+            IF @Alloc > 0
+            BEGIN
+                INSERT INTO #allocation (
+                    ISIN, ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+                    ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+                    AllocatedAmount, AllocationType
+                )
+                VALUES (
+                    @ISIN, @ProdLevel10, @ProdLevel9, @ProdLevel8, @ProdLevel7, @ProdLevel6PR,
+                    @ProdLevel5PG, @ProdLevel4SD, @ProdLevel3SB, @ProdLevel2BG,
+                    @Alloc,
+                    CASE 
+                        WHEN @level BETWEEN 10 AND 5 THEN 'Business Diversity'
+                        ELSE 'Business Invest'
+                    END
+                );
+
+                SET @RemainingCEN = @RemainingCEN - @Alloc;
+            END
+
+            SET @level = @level - 1;
+        END
+
+        FETCH NEXT FROM isin_cursor INTO @ISIN, @RemainingCEN;
+    END
+
+    CLOSE isin_cursor;
+    DEALLOCATE isin_cursor;
+
+    -- Final result
+    SELECT *
+    FROM #allocation
+    ORDER BY ISIN, ProdLevel2BG, ProdLevel3SB, ProdLevel10;
+END;
