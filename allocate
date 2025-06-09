@@ -1,0 +1,119 @@
+
+
+
+    -- Step 1: Combine TPA and TPL into one temp table
+    IF OBJECT_ID('tempdb..#BusinessBase') IS NOT NULL DROP TABLE #BusinessBase;
+
+    SELECT 
+        ISIN,
+        ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+        ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG,
+        GBPIFRSBalanceSheetAmount,
+        ABS(GBPIFRSBalanceSheetAmount) AS AbsAmount
+    INTO #BusinessBase
+    FROM (
+        SELECT * FROM #tpa
+        UNION ALL
+        SELECT * FROM #tpl
+    ) AS Combined;
+
+    -- Step 2: Add allocation level name and value (starting from level 10 up to level 2)
+    IF OBJECT_ID('tempdb..#Labeled') IS NOT NULL DROP TABLE #Labeled;
+
+    SELECT *,
+        CASE 
+            WHEN ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
+            WHEN ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
+            WHEN ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
+            WHEN ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
+            WHEN ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
+            WHEN ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
+            WHEN ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
+            WHEN ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
+            WHEN ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
+            ELSE 'UNKNOWN'
+        END AS AllocationLevelName,
+
+        COALESCE(
+            ProdLevel10, ProdLevel9, ProdLevel8, ProdLevel7, ProdLevel6PR,
+            ProdLevel5PG, ProdLevel4SD, ProdLevel3SB, ProdLevel2BG, 'UNKNOWN'
+        ) AS AllocationLevelValue
+    INTO #Labeled
+    FROM #BusinessBase;
+
+    -- Step 3: Total abs by ISIN
+    IF OBJECT_ID('tempdb..#ISINTotal') IS NOT NULL DROP TABLE #ISINTotal;
+    SELECT ISIN, SUM(AbsAmount) AS TotalAbsAmount
+    INTO #ISINTotal
+    FROM #Labeled
+    GROUP BY ISIN;
+
+    -- Step 4: Grouped hierarchy amount
+    IF OBJECT_ID('tempdb..#Grouped') IS NOT NULL DROP TABLE #Grouped;
+    SELECT 
+        ISIN,
+        AllocationLevelName,
+        AllocationLevelValue,
+        SUM(AbsAmount) AS GroupAbsAmount
+    INTO #Grouped
+    FROM #Labeled
+    GROUP BY ISIN, AllocationLevelName, AllocationLevelValue;
+
+    -- Step 5: Final allocation with AllocationType tagging
+    IF OBJECT_ID('tempdb..#Allocated') IS NOT NULL DROP TABLE #Allocated;
+    SELECT 
+        g.ISIN,
+        g.AllocationLevelName,
+        g.AllocationLevelValue,
+        g.GroupAbsAmount,
+        t.TotalAbsAmount,
+        c.GBPIFRSBalanceSheetAmount AS NettingAmount,
+        CASE 
+            WHEN t.TotalAbsAmount = 0 THEN 0
+            ELSE ROUND(g.GroupAbsAmount * c.GBPIFRSBalanceSheetAmount / t.TotalAbsAmount, 2)
+        END AS AllocatedAmount,
+        CASE 
+            WHEN t.TotalAbsAmount = 0 THEN 0
+            ELSE ROUND(g.GroupAbsAmount * 100.0 / t.TotalAbsAmount, 2)
+        END AS PercentOfTotal,
+        -- AllocationType tagging logic
+        CASE 
+            WHEN g.AllocationLevelName IN ('ProdLevel10', 'ProdLevel9', 'ProdLevel8', 'ProdLevel7', 'ProdLevel6PR') THEN 'Business Diversity'
+            WHEN g.AllocationLevelName IN ('ProdLevel5PG', 'ProdLevel4SD', 'ProdLevel3SB', 'ProdLevel2BG') THEN 'Business Invest'
+            ELSE 'Unclassified'
+        END AS AllocationType
+    INTO #Allocated
+    FROM #Grouped g
+    JOIN #ISINTotal t ON g.ISIN = t.ISIN
+    JOIN #cen c ON g.ISIN = c.ISIN;
+
+
+
+		-- Final output: ISIN, full hierarchy, allocated amount
+SELECT 
+    l.ISIN,
+    l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
+    l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG,
+    a.AllocatedAmount
+FROM #Allocated a
+JOIN #Labeled l
+    ON a.ISIN = l.ISIN 
+   AND a.AllocationLevelName = 
+        CASE 
+            WHEN l.ProdLevel10 IS NOT NULL THEN 'ProdLevel10'
+            WHEN l.ProdLevel9  IS NOT NULL THEN 'ProdLevel9'
+            WHEN l.ProdLevel8  IS NOT NULL THEN 'ProdLevel8'
+            WHEN l.ProdLevel7  IS NOT NULL THEN 'ProdLevel7'
+            WHEN l.ProdLevel6PR IS NOT NULL THEN 'ProdLevel6PR'
+            WHEN l.ProdLevel5PG IS NOT NULL THEN 'ProdLevel5PG'
+            WHEN l.ProdLevel4SD IS NOT NULL THEN 'ProdLevel4SD'
+            WHEN l.ProdLevel3SB IS NOT NULL THEN 'ProdLevel3SB'
+            WHEN l.ProdLevel2BG IS NOT NULL THEN 'ProdLevel2BG'
+            ELSE 'UNKNOWN'
+        END
+   AND a.AllocationLevelValue = COALESCE(
+            l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7, l.ProdLevel6PR,
+            l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG, 'UNKNOWN'
+        )
+ORDER BY l.ISIN, l.ProdLevel10, l.ProdLevel9, l.ProdLevel8, l.ProdLevel7,
+         l.ProdLevel6PR, l.ProdLevel5PG, l.ProdLevel4SD, l.ProdLevel3SB, l.ProdLevel2BG;
