@@ -1,4 +1,4 @@
--- Updated version of sp_AllocateCrossNetting_Hierarchical to fix overallocation -- Ensures total TPA and TPL allocation does not exceed CrossNetting amount -- Uses row_number to allocate once per path and avoids duplicate use of match keys
+-- Final cleaned and corrected version of sp_AllocateCrossNetting_Hierarchical -- Fixes large ORDER BY issue and replaces references to invalid alias
 
 CREATE PROCEDURE sp_AllocateCrossNetting_Hierarchical AS BEGIN SET NOCOUNT ON;
 
@@ -52,22 +52,19 @@ CREATE TABLE #Validation (
         tpl.ProdLevel8 AS TPL_ProdLevel8, tpl.ProdLevel9 AS TPL_ProdLevel9,
         tpl.ProdLevel10 AS TPL_ProdLevel10, tpl.ProdLevel11 AS TPL_ProdLevel11,
         ABS(tpa.TotalAmount) AS AbsTPA, ABS(tpl.TotalAmount) AS AbsTPL,
-        ROW_NUMBER() OVER (PARTITION BY tpa.ISIN ORDER BY
-            ISNULL(tpa.ProdLevel11,'') DESC, ISNULL(tpa.ProdLevel10,'') DESC, ISNULL(tpa.ProdLevel9,'') DESC,
-            ISNULL(tpa.ProdLevel8,'') DESC, ISNULL(tpa.ProdLevel7,'') DESC, ISNULL(tpa.ProdLevel6,'') DESC,
-            ISNULL(tpa.ProdLevel5,'') DESC, ISNULL(tpa.ProdLevel4,'') DESC, ISNULL(tpa.ProdLevel3,'') DESC
-        ) AS RowRank
+        ROW_NUMBER() OVER (PARTITION BY tpa.ISIN ORDER BY NEWID()) AS RowRank
     FROM #TPA tpa
     INNER JOIN #TPL tpl ON tpa.ISIN = tpl.ISIN
 ),
 LimitedAlloc AS (
     SELECT m.*, cn.GBPIFRSBalanceSheetAmount,
            CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END AS MinPair,
-           SUM(CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END) OVER (PARTITION BY m.ISIN ORDER BY RowRank) AS RunningTotal,
+           SUM(CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END) OVER (PARTITION BY m.ISIN ORDER BY RowRank ROWS UNBOUNDED PRECEDING) AS RunningTotal,
            SUM(CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END) OVER (PARTITION BY m.ISIN ORDER BY RowRank ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS PrevRunningTotal
     FROM TPA_TPL_Matches m
     INNER JOIN #CrossNetting cn ON m.ISIN = cn.ISIN
 )
+
 INSERT INTO #Journal_TPA
 SELECT
     ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6,
