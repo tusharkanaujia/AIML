@@ -135,3 +135,157 @@ END
 
 
 
+
+CREATE PROCEDURE sp_AllocateCrossNetting_Hierarchical AS BEGIN SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#TPA') IS NOT NULL DROP TABLE #TPA;
+IF OBJECT_ID('tempdb..#TPL') IS NOT NULL DROP TABLE #TPL;
+IF OBJECT_ID('tempdb..#Remaining') IS NOT NULL DROP TABLE #Remaining;
+IF OBJECT_ID('tempdb..#Journal') IS NOT NULL DROP TABLE #Journal;
+
+CREATE TABLE #TPA (
+    ISIN VARCHAR(20),
+    ProdLevel2 VARCHAR(100), ProdLevel3 VARCHAR(100), ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100), ProdLevel6 VARCHAR(100), ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    TotalAmount DECIMAL(18,2)
+);
+
+CREATE TABLE #TPL (
+    ISIN VARCHAR(20),
+    ProdLevel2 VARCHAR(100), ProdLevel3 VARCHAR(100), ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100), ProdLevel6 VARCHAR(100), ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    TotalAmount DECIMAL(18,2)
+);
+
+CREATE TABLE #Remaining (
+    ISIN VARCHAR(20) PRIMARY KEY,
+    RemainingAmount DECIMAL(18,2)
+);
+
+CREATE TABLE #Journal (
+    ISIN VARCHAR(20),
+    ProdLevel2 VARCHAR(100), ProdLevel3 VARCHAR(100), ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100), ProdLevel6 VARCHAR(100), ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    AllocatedAmount DECIMAL(18,2),
+    Type VARCHAR(3),
+    BalanceSource VARCHAR(100)
+);
+
+INSERT INTO #TPA
+SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+       ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, TotalAmount
+FROM BusinessDetails WHERE Type = 'TPA';
+
+INSERT INTO #TPL
+SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+       ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, TotalAmount
+FROM BusinessDetails WHERE Type = 'TPL';
+
+INSERT INTO #Remaining
+SELECT ISIN, GBPIFRSBalanceSheetAmount
+FROM CrossNetting;
+
+DECLARE @level INT = 11;
+
+WHILE @level >= 2
+BEGIN
+    WITH TPA_Grouped AS (
+        SELECT ISIN,
+            ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+            ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+            SUM(TotalAmount) AS TotalTPA
+        FROM #TPA
+        GROUP BY ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6,
+                 ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11
+    ),
+    TPL_Grouped AS (
+        SELECT ISIN,
+            ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+            ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+            SUM(TotalAmount) AS TotalTPL
+        FROM #TPL
+        GROUP BY ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6,
+                 ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11
+    ),
+    MatchGroup AS (
+        SELECT 
+            tpa.ISIN,
+            tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, tpa.ProdLevel6,
+            tpa.ProdLevel7, tpa.ProdLevel8, tpa.ProdLevel9, tpa.ProdLevel10, tpa.ProdLevel11,
+            ABS(tpa.TotalTPA) AS AbsTPA,
+            ABS(tpl.TotalTPL) AS AbsTPL
+        FROM TPA_Grouped tpa
+        JOIN TPL_Grouped tpl ON
+            tpa.ISIN = tpl.ISIN AND
+            (ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'') AND
+             ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'') AND
+             (@level < 4 OR ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')) AND
+             (@level < 5 OR ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')) AND
+             (@level < 6 OR ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')) AND
+             (@level < 7 OR ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')) AND
+             (@level < 8 OR ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')) AND
+             (@level < 9 OR ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')) AND
+             (@level < 10 OR ISNULL(tpa.ProdLevel10,'') = ISNULL(tpl.ProdLevel10,'')) AND
+             (@level < 11 OR ISNULL(tpa.ProdLevel11,'') = ISNULL(tpl.ProdLevel11,''))
+            )
+    )
+    INSERT INTO #Journal
+    SELECT
+        m.ISIN, m.ProdLevel2, m.ProdLevel3, m.ProdLevel4, m.ProdLevel5, m.ProdLevel6,
+        m.ProdLevel7, m.ProdLevel8, m.ProdLevel9, m.ProdLevel10, m.ProdLevel11,
+        alloc.Alloc AS AllocatedAmount,
+        'TPA' AS Type,
+        CASE
+            WHEN m.ProdLevel4 IS NOT NULL AND m.ProdLevel3 IS NOT NULL THEN 'Cross Entity - Business and Diversified'
+            WHEN m.ProdLevel4 IS NOT NULL THEN 'Cross Entity - Business'
+            WHEN m.ProdLevel3 IS NOT NULL THEN 'Cross Entity - Diversified'
+            ELSE NULL
+        END
+    FROM MatchGroup m
+    JOIN #Remaining r ON m.ISIN = r.ISIN
+    CROSS APPLY (
+        SELECT CASE
+            WHEN r.RemainingAmount >= MIN(m.AbsTPA, m.AbsTPL) THEN MIN(m.AbsTPA, m.AbsTPL)
+            ELSE r.RemainingAmount
+        END AS Alloc
+    ) alloc
+    WHERE alloc.Alloc > 0;
+
+    -- Subtract allocated amounts from remaining
+    UPDATE r
+    SET RemainingAmount = r.RemainingAmount - alloc.TotalAlloc
+    FROM #Remaining r
+    JOIN (
+        SELECT ISIN, SUM(AllocatedAmount) AS TotalAlloc
+        FROM #Journal
+        WHERE Type = 'TPA'
+        GROUP BY ISIN
+    ) alloc ON r.ISIN = alloc.ISIN;
+
+    SET @level = @level - 1;
+END
+
+-- Mirror TPA allocations to TPL (negative)
+INSERT INTO #Journal
+SELECT
+    ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+    ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+    -AllocatedAmount, 'TPL', BalanceSource
+FROM #Journal
+WHERE Type = 'TPA';
+
+-- Output
+SELECT * FROM #Journal WHERE Type = 'TPA';
+SELECT * FROM #Journal WHERE Type = 'TPL';
+
+END
+
+
+
+
