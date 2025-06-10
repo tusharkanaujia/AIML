@@ -508,3 +508,604 @@ BEGIN
     SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
     SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
 END
+
+
+-----
+
+
+
+-- =============================================
+-- COMPLETE ISIN-BASED CROSS-ENTITY ALLOCATION SCRIPT
+-- SQL Server Version
+-- =============================================
+
+-- Drop existing tables if they exist
+IF OBJECT_ID('tpl_table', 'U') IS NOT NULL DROP TABLE tpl_table;
+IF OBJECT_ID('tpa_table', 'U') IS NOT NULL DROP TABLE tpa_table;
+IF OBJECT_ID('cross_entity_table', 'U') IS NOT NULL DROP TABLE cross_entity_table;
+
+-- =============================================
+-- SECTION 1: CREATE TABLES
+-- =============================================
+
+PRINT 'Creating tables...';
+
+-- Table 1: Cross Entity ISIN Data (Simple: ISIN + Amount only)
+CREATE TABLE cross_entity_table (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    isin VARCHAR(20),
+    gbp_ifrs_balance_sheet_amount DECIMAL(18,2)
+);
+
+-- Table 2: TPA Business Level Data (ISIN + Full hierarchy with positive amounts)
+CREATE TABLE tpa_table (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    isin VARCHAR(20),
+    balance_classification VARCHAR(50),
+    prod_level_2 VARCHAR(50),
+    prod_level_3 VARCHAR(50),
+    prod_level_4 VARCHAR(100),
+    prod_level_5 VARCHAR(100),
+    prod_level_6 VARCHAR(100),
+    prod_level_7 VARCHAR(100),
+    prod_level_8 VARCHAR(100),
+    prod_level_9 VARCHAR(100),
+    prod_level_10 VARCHAR(100),
+    total_amount DECIMAL(18,2)
+);
+
+-- Table 3: TPL Business Level Data (ISIN + Full hierarchy with negative amounts)
+CREATE TABLE tpl_table (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    isin VARCHAR(20),
+    balance_classification VARCHAR(50),
+    prod_level_2 VARCHAR(50),
+    prod_level_3 VARCHAR(50),
+    prod_level_4 VARCHAR(100),
+    prod_level_5 VARCHAR(100),
+    prod_level_6 VARCHAR(100),
+    prod_level_7 VARCHAR(100),
+    prod_level_8 VARCHAR(100),
+    prod_level_9 VARCHAR(100),
+    prod_level_10 VARCHAR(100),
+    total_amount DECIMAL(18,2)
+);
+
+PRINT 'Tables created successfully.';
+
+-- =============================================
+-- SECTION 2: INSERT TEST DATA
+-- =============================================
+
+PRINT 'Inserting test data...';
+
+-- Table 1: Cross Entity ISIN Data (only ISIN and amount)
+INSERT INTO cross_entity_table (isin, gbp_ifrs_balance_sheet_amount)
+VALUES 
+('CH0012221716', 6964368.00),
+('GB00B4L5Y983', -2500000.00),
+('US0378331005', 1800000.00),
+('DE0007164600', -3200000.00),
+('JP3633400001', 950000.00),
+('FR0000120321', -1150000.00),
+('NL0000235190', 780000.00),
+('CH0038863350', -890000.00),
+('GB00BH4HKS39', 1200000.00),
+('US88160R1014', -750000.00);
+
+-- Table 2: TPA Business Level Data with ISINs (positive amounts)
+INSERT INTO tpa_table (isin, balance_classification, prod_level_2, prod_level_3, prod_level_4, prod_level_5, prod_level_6, prod_level_7, prod_level_8, prod_level_9, prod_level_10, total_amount)
+VALUES 
+-- ISIN: CH0012221716 (Largest cross-entity amount)
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Capcom', 'Inventory', 1253.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Inventory Central Risk', 'Inventory', 2691.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Flow Derivatives -EMEA', 'Stocks', 'SS-Auto-Ind-Consumers', 'Flow - Industrials', 1563957.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Custom Baskets', 391385.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'DM', 1122865.00),
+
+-- ISIN: GB00B4L5Y983 
+('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Long Term', 'Illiquid - Non-Standard Fwd', 13930.00),
+('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Global Bench', 24801.00),
+('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Sector/EU Custom/SS/ETF', 'Sector', 'Termed', 844268.00),
+
+-- ISIN: US0378331005
+('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Other', 19.00),
+('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'Pswaps', 'Pswap', 'Pswap', 1.00),
+
+-- ISIN: DE0007164600
+('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Structured Derivs EMEA', 'QIS', 'QIS Linear', 'Equity QIS', 'Dynamic Baskets', 25000.00),
+('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'CFD', 'CFD', 'CFD', 15000.00),
+
+-- ISIN: JP3633400001
+('JP3633400001', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'D1 Inventory', 'Lux Index Investments', 'Lux Index Investments', 85000.00),
+
+-- ISIN: FR0000120321
+('FR0000120321', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Liquidation Central Risk', 'Liquidation', 45000.00),
+
+-- ISIN: NL0000235190
+('NL0000235190', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'OMX', 12000.00),
+
+-- ISIN: CH0038863350
+('CH0038863350', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', 35000.00),
+
+-- ISIN: GB00BH4HKS39
+('GB00BH4HKS39', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Core Funding', 75000.00),
+
+-- ISIN: US88160R1014
+('US88160R1014', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', 8500.00);
+
+-- Table 3: TPL Business Level Data with ISINs (negative amounts)
+INSERT INTO tpl_table (isin, balance_classification, prod_level_2, prod_level_3, prod_level_4, prod_level_5, prod_level_6, prod_level_7, prod_level_8, prod_level_9, prod_level_10, total_amount)
+VALUES 
+-- ISIN: CH0012221716 (Largest cross-entity amount) - Corresponding TPL negative amounts
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Delta-1 Flow', -15790674.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'D1 Inventory', 'Lux Index Investments', 'Lux Index Investments', -4717120.00),
+('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'CFD', 'CFD', 'CFD', -138262.00),
+
+-- ISIN: GB00B4L5Y983 - TPL negative amounts
+('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', -81541.00),
+('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'OMX', -42.00),
+
+-- ISIN: US0378331005 - TPL negative amounts
+('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', -3.00),
+('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'DM', -1.00),
+
+-- ISIN: DE0007164600 - TPL negative amounts
+('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', -125000.00),
+('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'Pswaps', 'Pswap', 'Pswap', -85000.00),
+
+-- ISIN: JP3633400001 - TPL negative amounts
+('JP3633400001', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Sector/EU Custom/SS/ETF', 'CIB', 'Open swaps', -95000.00),
+
+-- ISIN: FR0000120321 - TPL negative amounts
+('FR0000120321', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Inventory Central Risk', 'Inventory', -65000.00),
+
+-- ISIN: NL0000235190 - TPL negative amounts
+('NL0000235190', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Long Term', 'Illiquid - Non-Standard Fwd', -18000.00),
+
+-- ISIN: CH0038863350 - TPL negative amounts
+('CH0038863350', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Flow Derivatives -EMEA', 'Stocks', 'SS-Auto-Ind-Consumers', 'Flow - Industrials', -45000.00),
+
+-- ISIN: GB00BH4HKS39 - TPL negative amounts
+('GB00BH4HKS39', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Core Funding', -95000.00),
+
+-- ISIN: US88160R1014 - TPL negative amounts
+('US88160R1014', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', -12000.00);
+
+PRINT 'Test data inserted successfully.';
+
+-- =============================================
+-- SECTION 3: DATA VALIDATION
+-- =============================================
+
+PRINT 'Validating test data...';
+
+-- Check Cross Entity ISIN totals
+SELECT 'Cross Entity ISIN Total' as TableName, 
+       SUM(gbp_ifrs_balance_sheet_amount) as Total_Amount, 
+       COUNT(*) as Row_Count,
+       COUNT(DISTINCT isin) as Unique_ISINs
+FROM cross_entity_table;
+
+-- Check TPA totals by ISIN (should be positive)
+SELECT 'TPA by ISIN' as TableName, 
+       isin,
+       SUM(total_amount) as Total_Amount, 
+       COUNT(*) as Row_Count 
+FROM tpa_table
+GROUP BY isin
+ORDER BY SUM(total_amount) DESC;
+
+-- Check TPL totals by ISIN (should be negative)
+SELECT 'TPL by ISIN' as TableName, 
+       isin,
+       SUM(total_amount) as Total_Amount, 
+       COUNT(*) as Row_Count 
+FROM tpl_table
+GROUP BY isin
+ORDER BY SUM(total_amount);
+
+-- Verify ISIN matching between tables
+SELECT 
+    ce.isin as CrossEntity_ISIN,
+    CASE WHEN tpa.isin IS NOT NULL THEN 'YES' ELSE 'NO' END as Has_TPA_Data,
+    CASE WHEN tpl.isin IS NOT NULL THEN 'YES' ELSE 'NO' END as Has_TPL_Data,
+    ce.gbp_ifrs_balance_sheet_amount as CrossEntity_Amount
+FROM cross_entity_table ce
+LEFT JOIN (SELECT DISTINCT isin FROM tpa_table) tpa ON ce.isin = tpa.isin
+LEFT JOIN (SELECT DISTINCT isin FROM tpl_table) tpl ON ce.isin = tpl.isin
+ORDER BY ce.isin;
+
+PRINT 'Data validation completed.';
+
+-- =============================================
+-- SECTION 4: CROSS-ENTITY ALLOCATION QUERY
+-- =============================================
+
+PRINT 'Running ISIN-based cross-entity allocation...';
+
+WITH cross_entity_isin AS (
+    -- ISIN Cross Entity amounts to be allocated
+    SELECT 
+        isin,
+        gbp_ifrs_balance_sheet_amount as cross_entity_amount
+    FROM cross_entity_table
+    WHERE gbp_ifrs_balance_sheet_amount IS NOT NULL AND gbp_ifrs_balance_sheet_amount <> 0
+),
+
+tpa_business_by_isin AS (
+    -- TPA Business Level Data with hierarchy keys, grouped by ISIN
+    SELECT 
+        isin,
+        prod_level_2,
+        prod_level_3,
+        prod_level_4, 
+        prod_level_5,
+        prod_level_6,
+        prod_level_7,
+        prod_level_8,
+        prod_level_9,
+        prod_level_10,
+        total_amount as tpa_amount,
+        ABS(total_amount) as tpa_abs_amount,
+        -- Create hierarchy keys for matching at different levels
+        prod_level_2 as level2_key,
+        CONCAT(prod_level_2, '|', prod_level_3) as level3_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4) as level4_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5) as level5_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6) as level6_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7) as level7_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8) as level8_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9) as level9_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9, '|', prod_level_10) as level10_key,
+        -- Determine most granular level with data
+        CASE 
+            WHEN prod_level_10 IS NOT NULL AND prod_level_10 <> '' THEN 10
+            WHEN prod_level_9 IS NOT NULL AND prod_level_9 <> '' THEN 9
+            WHEN prod_level_8 IS NOT NULL AND prod_level_8 <> '' THEN 8
+            WHEN prod_level_7 IS NOT NULL AND prod_level_7 <> '' THEN 7
+            WHEN prod_level_6 IS NOT NULL AND prod_level_6 <> '' THEN 6
+            WHEN prod_level_5 IS NOT NULL AND prod_level_5 <> '' THEN 5
+            WHEN prod_level_4 IS NOT NULL AND prod_level_4 <> '' THEN 4
+            WHEN prod_level_3 IS NOT NULL AND prod_level_3 <> '' THEN 3
+            ELSE 2
+        END as tpa_granular_level
+    FROM tpa_table
+    WHERE total_amount IS NOT NULL AND total_amount <> 0
+),
+
+tpl_business_by_isin AS (
+    -- TPL Business Level Data with hierarchy keys, grouped by ISIN
+    SELECT 
+        isin,
+        prod_level_2,
+        prod_level_3,
+        prod_level_4,
+        prod_level_5,
+        prod_level_6,
+        prod_level_7,
+        prod_level_8,
+        prod_level_9,
+        prod_level_10,
+        total_amount as tpl_amount,
+        ABS(total_amount) as tpl_abs_amount,  -- Use absolute value for negative amounts
+        -- Create hierarchy keys for matching at different levels
+        prod_level_2 as level2_key,
+        CONCAT(prod_level_2, '|', prod_level_3) as level3_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4) as level4_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5) as level5_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6) as level6_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7) as level7_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8) as level8_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9) as level9_key,
+        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9, '|', prod_level_10) as level10_key,
+        -- Determine most granular level with data
+        CASE 
+            WHEN prod_level_10 IS NOT NULL AND prod_level_10 <> '' THEN 10
+            WHEN prod_level_9 IS NOT NULL AND prod_level_9 <> '' THEN 9
+            WHEN prod_level_8 IS NOT NULL AND prod_level_8 <> '' THEN 8
+            WHEN prod_level_7 IS NOT NULL AND prod_level_7 <> '' THEN 7
+            WHEN prod_level_6 IS NOT NULL AND prod_level_6 <> '' THEN 6
+            WHEN prod_level_5 IS NOT NULL AND prod_level_5 <> '' THEN 5
+            WHEN prod_level_4 IS NOT NULL AND prod_level_4 <> '' THEN 4
+            WHEN prod_level_3 IS NOT NULL AND prod_level_3 <> '' THEN 3
+            ELSE 2
+        END as tpl_granular_level
+    FROM tpl_table
+    WHERE total_amount IS NOT NULL AND total_amount <> 0
+),
+
+-- TPA Allocation Weights (calculated per ISIN)
+tpa_allocation_weights AS (
+    SELECT 
+        ce.isin,
+        ce.cross_entity_amount,
+        tpa.prod_level_2,
+        tpa.prod_level_3,
+        tpa.prod_level_4,
+        tpa.prod_level_5,
+        tpa.prod_level_6,
+        tpa.prod_level_7,
+        tpa.prod_level_8,
+        tpa.prod_level_9,
+        tpa.prod_level_10,
+        tpa.tpa_amount,
+        tpa.tpa_abs_amount,
+        tpa.tpa_granular_level,
+        -- Calculate allocation weight within each ISIN
+        tpa.tpa_abs_amount / NULLIF(SUM(tpa.tpa_abs_amount) OVER(PARTITION BY ce.isin), 0) as tpa_weight,
+        -- Rank by granular level within each ISIN (most granular gets priority)
+        ROW_NUMBER() OVER(PARTITION BY ce.isin ORDER BY tpa.tpa_granular_level DESC, tpa.tpa_abs_amount DESC) as tpa_priority
+    FROM cross_entity_isin ce
+    INNER JOIN tpa_business_by_isin tpa ON ce.isin = tpa.isin
+    WHERE tpa.tpa_abs_amount > 0
+),
+
+-- TPL Allocation Weights (calculated per ISIN)
+tpl_allocation_weights AS (
+    SELECT 
+        ce.isin,
+        ce.cross_entity_amount,
+        tpl.prod_level_2,
+        tpl.prod_level_3,
+        tpl.prod_level_4,
+        tpl.prod_level_5,
+        tpl.prod_level_6,
+        tpl.prod_level_7,
+        tpl.prod_level_8,
+        tpl.prod_level_9,
+        tpl.prod_level_10,
+        tpl.tpl_amount,
+        tpl.tpl_abs_amount,
+        tpl.tpl_granular_level,
+        -- Calculate allocation weight within each ISIN
+        tpl.tpl_abs_amount / NULLIF(SUM(tpl.tpl_abs_amount) OVER(PARTITION BY ce.isin), 0) as tpl_weight,
+        -- Rank by granular level within each ISIN (most granular gets priority)
+        ROW_NUMBER() OVER(PARTITION BY ce.isin ORDER BY tpl.tpl_granular_level DESC, tpl.tpl_abs_amount DESC) as tpl_priority
+    FROM cross_entity_isin ce
+    INNER JOIN tpl_business_by_isin tpl ON ce.isin = tpl.isin
+    WHERE tpl.tpl_abs_amount > 0
+),
+
+-- TPA Journal Entries
+tpa_journal AS (
+    SELECT 
+        'TPA' as journal_type,
+        isin,
+        cross_entity_amount,
+        prod_level_2,
+        prod_level_3,
+        prod_level_4,
+        prod_level_5,
+        prod_level_6,
+        prod_level_7,
+        prod_level_8,
+        prod_level_9,
+        prod_level_10,
+        tpa_granular_level as allocated_level,
+        tpa_amount as business_amount,
+        tpa_abs_amount as weight_basis,
+        tpa_weight as allocation_weight,
+        cross_entity_amount * tpa_weight as allocated_amount,
+        -- Journal Entry Details
+        'Cross Entity Netting' as debit_account,
+        CONCAT('TPA-', isin, '-', prod_level_2, '-', prod_level_4) as credit_account,
+        ABS(cross_entity_amount * tpa_weight) as journal_amount,
+        CASE 
+            WHEN cross_entity_amount * tpa_weight >= 0 THEN 'DR' 
+            ELSE 'CR' 
+        END as debit_credit_indicator,
+        ROW_NUMBER() OVER(ORDER BY ABS(cross_entity_amount * tpa_weight) DESC) as journal_entry_number
+    FROM tpa_allocation_weights
+),
+
+-- TPL Journal Entries
+tpl_journal AS (
+    SELECT 
+        'TPL' as journal_type,
+        isin,
+        cross_entity_amount,
+        prod_level_2,
+        prod_level_3,
+        prod_level_4,
+        prod_level_5,
+        prod_level_6,
+        prod_level_7,
+        prod_level_8,
+        prod_level_9,
+        prod_level_10,
+        tpl_granular_level as allocated_level,
+        tpl_amount as business_amount,
+        tpl_abs_amount as weight_basis,
+        tpl_weight as allocation_weight,
+        cross_entity_amount * tpl_weight as allocated_amount,
+        -- Journal Entry Details
+        'Cross Entity Netting' as debit_account,
+        CONCAT('TPL-', isin, '-', prod_level_2, '-', prod_level_4) as credit_account,
+        ABS(cross_entity_amount * tpl_weight) as journal_amount,
+        CASE 
+            WHEN cross_entity_amount * tpl_weight >= 0 THEN 'DR' 
+            ELSE 'CR' 
+        END as debit_credit_indicator,
+        ROW_NUMBER() OVER(ORDER BY ABS(cross_entity_amount * tpl_weight) DESC) as journal_entry_number
+    FROM tpl_allocation_weights
+)
+
+-- =============================================
+-- RESULTS OUTPUT
+-- =============================================
+SELECT 
+    'TPA_JOURNAL' as result_type,
+    journal_entry_number,
+    journal_type,
+    isin,
+    allocated_level,
+    prod_level_2,
+    prod_level_3,
+    prod_level_4,
+    prod_level_5,
+    prod_level_6,
+    prod_level_7,
+    prod_level_8,
+    prod_level_9,
+    prod_level_10,
+    debit_account,
+    credit_account,
+    debit_credit_indicator,
+    journal_amount,
+    allocated_amount,
+    business_amount,
+    weight_basis,
+    allocation_weight,
+    cross_entity_amount,
+    'TPA Cross-Entity ISIN Allocation' as journal_description
+FROM tpa_journal
+WHERE ABS(allocated_amount) > 0.01  -- Filter out very small amounts
+
+UNION ALL
+
+SELECT 
+    'TPL_JOURNAL' as result_type,
+    journal_entry_number,
+    journal_type,
+    isin,
+    allocated_level,
+    prod_level_2,
+    prod_level_3,
+    prod_level_4,
+    prod_level_5,
+    prod_level_6,
+    prod_level_7,
+    prod_level_8,
+    prod_level_9,
+    prod_level_10,
+    debit_account,
+    credit_account,
+    debit_credit_indicator,
+    journal_amount,
+    allocated_amount,
+    business_amount,
+    weight_basis,
+    allocation_weight,
+    cross_entity_amount,
+    'TPL Cross-Entity ISIN Allocation' as journal_description
+FROM tpl_journal
+WHERE ABS(allocated_amount) > 0.01  -- Filter out very small amounts
+
+UNION ALL
+
+SELECT 
+    'ISIN_SUMMARY' as result_type,
+    NULL as journal_entry_number,
+    journal_type,
+    isin,
+    NULL as allocated_level,
+    NULL as prod_level_2,
+    NULL as prod_level_3,
+    NULL as prod_level_4,
+    NULL as prod_level_5,
+    NULL as prod_level_6,
+    NULL as prod_level_7,
+    NULL as prod_level_8,
+    NULL as prod_level_9,
+    NULL as prod_level_10,
+    NULL as debit_account,
+    NULL as credit_account,
+    NULL as debit_credit_indicator,
+    SUM(journal_amount) as journal_amount,
+    SUM(allocated_amount) as allocated_amount,
+    NULL as business_amount,
+    NULL as weight_basis,
+    NULL as allocation_weight,
+    MAX(cross_entity_amount) as cross_entity_amount,
+    CONCAT(journal_type, ' Total for ISIN: ', isin) as journal_description
+FROM (
+    SELECT journal_type, isin, journal_amount, allocated_amount, cross_entity_amount FROM tpa_journal
+    UNION ALL
+    SELECT journal_type, isin, journal_amount, allocated_amount, cross_entity_amount FROM tpl_journal
+) combined_by_isin
+GROUP BY journal_type, isin
+
+UNION ALL
+
+SELECT 
+    'GRAND_SUMMARY' as result_type,
+    NULL as journal_entry_number,
+    journal_type,
+    NULL as isin,
+    NULL as allocated_level,
+    NULL as prod_level_2,
+    NULL as prod_level_3,
+    NULL as prod_level_4,
+    NULL as prod_level_5,
+    NULL as prod_level_6,
+    NULL as prod_level_7,
+    NULL as prod_level_8,
+    NULL as prod_level_9,
+    NULL as prod_level_10,
+    NULL as debit_account,
+    NULL as credit_account,
+    NULL as debit_credit_indicator,
+    SUM(journal_amount) as journal_amount,
+    SUM(allocated_amount) as allocated_amount,
+    NULL as business_amount,
+    NULL as weight_basis,
+    NULL as allocation_weight,
+    NULL as cross_entity_amount,
+    CONCAT('GRAND TOTAL - ', journal_type, ' Journal') as journal_description
+FROM (
+    SELECT journal_type, journal_amount, allocated_amount FROM tpa_journal
+    UNION ALL
+    SELECT journal_type, journal_amount, allocated_amount FROM tpl_journal
+) grand_total
+GROUP BY journal_type
+
+UNION ALL
+
+SELECT 
+    'VALIDATION' as result_type,
+    NULL as journal_entry_number,
+    'VALIDATION' as journal_type,
+    NULL as isin,
+    NULL as allocated_level,
+    NULL as prod_level_2,
+    NULL as prod_level_3,
+    'Cross Entity Total' as prod_level_4,
+    NULL as prod_level_5,
+    NULL as prod_level_6,
+    NULL as prod_level_7,
+    NULL as prod_level_8,
+    NULL as prod_level_9,
+    NULL as prod_level_10,
+    NULL as debit_account,
+    NULL as credit_account,
+    NULL as debit_credit_indicator,
+    SUM(gbp_ifrs_balance_sheet_amount) as journal_amount,
+    SUM(gbp_ifrs_balance_sheet_amount) as allocated_amount,
+    NULL as business_amount,
+    NULL as weight_basis,
+    NULL as allocation_weight,
+    SUM(gbp_ifrs_balance_sheet_amount) as cross_entity_amount,
+    'Original Cross Entity Total (should match allocated totals)' as journal_description
+FROM cross_entity_table
+
+ORDER BY 
+    result_type,
+    journal_type,
+    isin,
+    journal_entry_number;
+
+PRINT 'Cross-entity allocation completed successfully!';
+
+-- =============================================
+-- SCRIPT COMPLETION
+-- =============================================
+
+PRINT '================================================================';
+PRINT 'SCRIPT EXECUTION COMPLETED';
+PRINT '================================================================';
+PRINT 'Tables Created: cross_entity_table, tpa_table, tpl_table';
+PRINT 'Test Data: 10 ISINs with TPA and TPL business level exposures';
+PRINT 'Allocation: ISIN-based allocation to TPA and TPL journals';
+PRINT 'Results: View by result_type (TPA_JOURNAL, TPL_JOURNAL, etc.)';
+PRINT '================================================================';
