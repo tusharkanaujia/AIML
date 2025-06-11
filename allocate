@@ -1,1111 +1,600 @@
-CREATE PROCEDURE sp_AllocateCrossNetting_MultiISIN
-AS
+
+DROP TABLE if exists #WorkingData;
+DROP TABLE if exists #AllocationResults;
+
+-- Create a working table with row identifiers
+CREATE TABLE #WorkingData (
+    RowID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    Type VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    OriginalAmount DECIMAL(20,2),
+    RemainingAmount DECIMAL(20,2)
+);
+
+-- Insert data into working table
+INSERT INTO #WorkingData (ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, OriginalAmount, RemainingAmount)
+SELECT ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, TotalAmount, TotalAmount
+FROM BusinessDetails;
+
+-- Create allocation results table
+CREATE TABLE #AllocationResults (
+    AllocationID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    AllocationLevel INT,
+    TPARowID INT,
+    TPLRowID INT,
+    MatchPath VARCHAR(1000),
+    TPAOriginalAmount DECIMAL(20,2),
+    TPLOriginalAmount DECIMAL(20,2),
+    AllocatedAmount DECIMAL(20,2),
+    TPARemainingAmount DECIMAL(20,2),
+    TPLRemainingAmount DECIMAL(20,2)
+);
+
+-- DEBUG: First, let's check potential matches at different levels
+PRINT '';
+PRINT 'Checking potential matches at each level:';
+
+-- Check Level 7 matches (this is where EMEA Delta One Synthetics should match)
+PRINT '';
+PRINT 'Level 7 potential matches:';
+SELECT 
+    'Level7' as MatchLevel,
+    tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, 
+    tpa.ProdLevel6, tpa.ProdLevel7,
+    tpa.TotalAmount as TPAAmount,
+    tpl.TotalAmount as TPLAmount
+FROM BusinessDetails tpa
+INNER JOIN BusinessDetails tpl 
+    ON tpa.ISIN = tpl.ISIN
+    AND tpa.ProdLevel2 = tpl.ProdLevel2
+    AND tpa.ProdLevel3 = tpl.ProdLevel3
+    AND tpa.ProdLevel4 = tpl.ProdLevel4
+    AND tpa.ProdLevel5 = tpl.ProdLevel5
+    AND tpa.ProdLevel6 = tpl.ProdLevel6
+    AND tpa.ProdLevel7 = tpl.ProdLevel7
+WHERE tpa.Type = 'TPA' AND tpl.Type = 'TPL'
+    AND tpa.TotalAmount < 0 AND tpl.TotalAmount > 0;
+
+-- Variables for processing
+DECLARE @CurrentLevel INT = 11;
+DECLARE @TotalCrossEntityAmount DECIMAL(20,2);
+DECLARE @RemainingCrossEntityAmount DECIMAL(20,2);
+
+SELECT @TotalCrossEntityAmount = GBPIFRSBalanceSheetAmount,
+       @RemainingCrossEntityAmount = GBPIFRSBalanceSheetAmount
+FROM CrossNetting
+WHERE ISIN = 'US5949181045';
+
+-- Process allocations from Level 11 down to Level 2
+WHILE @CurrentLevel >= 2 AND @RemainingCrossEntityAmount > 0
 BEGIN
-    SET NOCOUNT ON;
-
-    IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
-    IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
-
-    CREATE TABLE #Journal_TPA (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2),
-        BalanceSource VARCHAR(100)
-    );
-
-    CREATE TABLE #Journal_TPL (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2),
-        BalanceSource VARCHAR(100)
-    );
-
-    ---------------------------------------------
-    -- TPA Allocation
-    ---------------------------------------------
-    ;WITH TPA_Ranked AS (
-        SELECT
-            b.*,
-            c.GBPIFRSBalanceSheetAmount,
-            ABS(b.TotalAmount) AS AbsAmount,
-            ROW_NUMBER() OVER (
-                PARTITION BY b.ISIN
-                ORDER BY 
-                    CASE 
-                        WHEN ProdLevel11 IS NOT NULL THEN 1
-                        WHEN ProdLevel10 IS NOT NULL THEN 2
-                        WHEN ProdLevel9 IS NOT NULL THEN 3
-                        WHEN ProdLevel8 IS NOT NULL THEN 4
-                        WHEN ProdLevel7 IS NOT NULL THEN 5
-                        WHEN ProdLevel6 IS NOT NULL THEN 6
-                        WHEN ProdLevel5 IS NOT NULL THEN 7
-                        WHEN ProdLevel4 IS NOT NULL THEN 8
-                        WHEN ProdLevel3 IS NOT NULL THEN 9
-                        WHEN ProdLevel2 IS NOT NULL THEN 10
-                        ELSE 11 
-                    END
-            ) AS RowNum
-        FROM BusinessDetails b
-        JOIN CrossNetting c ON b.ISIN = c.ISIN
-        WHERE b.Type = 'TPA'
-    ),
-    TPA_Alloc AS (
-        SELECT *,
-            SUM(AbsAmount) OVER (PARTITION BY ISIN ORDER BY RowNum ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS RunningTotal,
-            SUM(AbsAmount) OVER (PARTITION BY ISIN ORDER BY RowNum ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS PrevTotal
-        FROM TPA_Ranked
-    )
-    INSERT INTO #Journal_TPA
-    SELECT 
-        ISIN,
-        ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-        ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-        CASE 
-            WHEN RunningTotal <= GBPIFRSBalanceSheetAmount THEN AbsAmount
-            WHEN PrevTotal < GBPIFRSBalanceSheetAmount THEN GBPIFRSBalanceSheetAmount - PrevTotal
-            ELSE 0 
-        END AS AllocatedAmount,
-        CASE
-            WHEN ProdLevel4 IS NOT NULL AND ProdLevel3 IS NOT NULL THEN 'Cross Entity - Business and Diversified'
-            WHEN ProdLevel4 IS NOT NULL THEN 'Cross Entity - Business'
-            WHEN ProdLevel3 IS NOT NULL THEN 'Cross Entity - Diversified'
-            ELSE NULL
-        END AS BalanceSource
-    FROM TPA_Alloc
-    WHERE 
-        (RunningTotal <= GBPIFRSBalanceSheetAmount)
-        OR (PrevTotal < GBPIFRSBalanceSheetAmount);
-
-    ---------------------------------------------
-    -- TPL Allocation
-    ---------------------------------------------
-    ;WITH TPL_Ranked AS (
-        SELECT
-            b.*,
-            c.GBPIFRSBalanceSheetAmount,
-            ABS(b.TotalAmount) AS AbsAmount,
-            ROW_NUMBER() OVER (
-                PARTITION BY b.ISIN
-                ORDER BY 
-                    CASE 
-                        WHEN ProdLevel11 IS NOT NULL THEN 1
-                        WHEN ProdLevel10 IS NOT NULL THEN 2
-                        WHEN ProdLevel9 IS NOT NULL THEN 3
-                        WHEN ProdLevel8 IS NOT NULL THEN 4
-                        WHEN ProdLevel7 IS NOT NULL THEN 5
-                        WHEN ProdLevel6 IS NOT NULL THEN 6
-                        WHEN ProdLevel5 IS NOT NULL THEN 7
-                        WHEN ProdLevel4 IS NOT NULL THEN 8
-                        WHEN ProdLevel3 IS NOT NULL THEN 9
-                        WHEN ProdLevel2 IS NOT NULL THEN 10
-                        ELSE 11 
-                    END
-            ) AS RowNum
-        FROM BusinessDetails b
-        JOIN CrossNetting c ON b.ISIN = c.ISIN
-        WHERE b.Type = 'TPL'
-    ),
-    TPL_Alloc AS (
-        SELECT *,
-            SUM(AbsAmount) OVER (PARTITION BY ISIN ORDER BY RowNum ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS RunningTotal,
-            SUM(AbsAmount) OVER (PARTITION BY ISIN ORDER BY RowNum ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS PrevTotal
-        FROM TPL_Ranked
-    )
-    INSERT INTO #Journal_TPL
-    SELECT 
-        ISIN,
-        ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-        ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-        -CASE 
-            WHEN RunningTotal <= GBPIFRSBalanceSheetAmount THEN AbsAmount
-            WHEN PrevTotal < GBPIFRSBalanceSheetAmount THEN GBPIFRSBalanceSheetAmount - PrevTotal
-            ELSE 0 
-        END AS AllocatedAmount,
-        CASE
-            WHEN ProdLevel4 IS NOT NULL AND ProdLevel3 IS NOT NULL THEN 'Cross Entity - Business and Diversified'
-            WHEN ProdLevel4 IS NOT NULL THEN 'Cross Entity - Business'
-            WHEN ProdLevel3 IS NOT NULL THEN 'Cross Entity - Diversified'
-            ELSE NULL
-        END AS BalanceSource
-    FROM TPL_Alloc
-    WHERE 
-        (RunningTotal <= GBPIFRSBalanceSheetAmount)
-        OR (PrevTotal < GBPIFRSBalanceSheetAmount);
-
-    ---------------------------------------------
-    -- Final output
-    ---------------------------------------------
-    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
-    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
-END
-
-
-
-
----
-
-
-
-CREATE PROCEDURE sp_AllocateCrossNetting_MultiISIN
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
-    IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
-
-    CREATE TABLE #Journal_TPA (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2),
-        BalanceSource VARCHAR(100)
-    );
-
-    CREATE TABLE #Journal_TPL (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2),
-        BalanceSource VARCHAR(100)
-    );
-
-    DECLARE @ISIN VARCHAR(20);
-    DECLARE @NettingAmount DECIMAL(18,2);
-
-    DECLARE ISIN_CURSOR CURSOR FOR
-        SELECT ISIN, GBPIFRSBalanceSheetAmount FROM CrossNetting;
-
-    OPEN ISIN_CURSOR;
-    FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
-
-    WHILE @@FETCH_STATUS = 0
+    PRINT '';
+    PRINT 'Processing Level ' + CAST(@CurrentLevel AS VARCHAR);
+    
+    -- Simplified approach: direct insert based on level
+    IF @CurrentLevel = 11
     BEGIN
-        IF OBJECT_ID('tempdb..#TempTPA') IS NOT NULL DROP TABLE #TempTPA;
-        IF OBJECT_ID('tempdb..#TempTPL') IS NOT NULL DROP TABLE #TempTPL;
+        -- Level 11: All levels must match (including NULLs)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
+                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,''), '|',
+                   ISNULL(tpa.ProdLevel10,''), '|', ISNULL(tpa.ProdLevel11,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
+            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
+            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
+            AND ISNULL(tpa.ProdLevel10,'') = ISNULL(tpl.ProdLevel10,'')
+            AND ISNULL(tpa.ProdLevel11,'') = ISNULL(tpl.ProdLevel11,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+    ELSE IF @CurrentLevel = 10
+    BEGIN
+        -- Level 10: Match levels 2-10, ignore level 11
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
+                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,''), '|',
+                   ISNULL(tpa.ProdLevel10,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
+            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
+            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
+            AND ISNULL(tpa.ProdLevel10,'') = ISNULL(tpl.ProdLevel10,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+    -- Continue for other levels...
 
-        SELECT *, ROW_NUMBER() OVER (
-            ORDER BY 
-                CASE 
-                    WHEN ProdLevel11 IS NOT NULL THEN 1
-                    WHEN ProdLevel10 IS NOT NULL THEN 2
-                    WHEN ProdLevel9 IS NOT NULL THEN 3
-                    WHEN ProdLevel8 IS NOT NULL THEN 4
-                    WHEN ProdLevel7 IS NOT NULL THEN 5
-                    WHEN ProdLevel6 IS NOT NULL THEN 6
-                    WHEN ProdLevel5 IS NOT NULL THEN 7
-                    WHEN ProdLevel4 IS NOT NULL THEN 8
-                    WHEN ProdLevel3 IS NOT NULL THEN 9
-                    WHEN ProdLevel2 IS NOT NULL THEN 10
-                    ELSE 11 
-                END
-        ) AS RowNum
-        INTO #TempTPA
-        FROM BusinessDetails
-        WHERE ISIN = @ISIN AND Type = 'TPA';
 
-        SELECT *, ROW_NUMBER() OVER (
-            ORDER BY 
-                CASE 
-                    WHEN ProdLevel11 IS NOT NULL THEN 1
-                    WHEN ProdLevel10 IS NOT NULL THEN 2
-                    WHEN ProdLevel9 IS NOT NULL THEN 3
-                    WHEN ProdLevel8 IS NOT NULL THEN 4
-                    WHEN ProdLevel7 IS NOT NULL THEN 5
-                    WHEN ProdLevel6 IS NOT NULL THEN 6
-                    WHEN ProdLevel5 IS NOT NULL THEN 7
-                    WHEN ProdLevel4 IS NOT NULL THEN 8
-                    WHEN ProdLevel3 IS NOT NULL THEN 9
-                    WHEN ProdLevel2 IS NOT NULL THEN 10
-                    ELSE 11 
-                END
-        ) AS RowNum
-        INTO #TempTPL
-        FROM BusinessDetails
-        WHERE ISIN = @ISIN AND Type = 'TPL';
+	ELSE IF @CurrentLevel = 9
+    BEGIN
+        -- Level 10: Match levels 2-10, ignore level 11
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
+                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
+            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
+            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+    -- Continue for other levels...
 
-        -- TPA Allocation
-        DECLARE @RunningTPA DECIMAL(18,2) = 0;
-        DECLARE @Row INT = 1;
-        DECLARE @TotalRows INT = (SELECT COUNT(*) FROM #TempTPA);
+	
 
-        WHILE @Row <= @TotalRows AND @RunningTPA < @NettingAmount
-        BEGIN
-            DECLARE @TPAAmount DECIMAL(18,2);
-            SELECT @TPAAmount = ABS(TotalAmount) FROM #TempTPA WHERE RowNum = @Row;
+	ELSE IF @CurrentLevel = 8
+    BEGIN
+        -- Level 10: Match levels 2-10, ignore level 11
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
+                   ISNULL(tpa.ProdLevel8,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
+            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+    -- Continue for other levels...
 
-            DECLARE @AllocAmount DECIMAL(18,2) =
-                CASE
-                    WHEN @RunningTPA + @TPAAmount <= @NettingAmount THEN @TPAAmount
-                    ELSE @NettingAmount - @RunningTPA
-                END;
 
-            DECLARE @P2 VARCHAR(100), @P3 VARCHAR(100), @P4 VARCHAR(100), @BalanceSource VARCHAR(100);
-            SELECT @P2 = ProdLevel2, @P3 = ProdLevel3, @P4 = ProdLevel4
-            FROM #TempTPA WHERE RowNum = @Row;
-
-            SET @BalanceSource = CASE
-                WHEN @P4 IS NOT NULL AND (@P3 IS NOT NULL AND @P2 IS NOT NULL) THEN 'Cross Entity - Business and Diversified'
-                WHEN @P4 IS NOT NULL THEN 'Cross Entity - Business'
-                WHEN @P3 IS NOT NULL THEN 'Cross Entity - Diversified'
-                ELSE NULL
-            END;
-
-            INSERT INTO #Journal_TPA
-            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-                   @AllocAmount, @BalanceSource
-            FROM #TempTPA
-            WHERE RowNum = @Row AND @AllocAmount > 0;
-
-            SET @RunningTPA += @AllocAmount;
-            SET @Row += 1;
-        END
-
-        -- TPL Allocation
-        DECLARE @RunningTPL DECIMAL(18,2) = 0;
-        SET @Row = 1;
-        SET @TotalRows = (SELECT COUNT(*) FROM #TempTPL);
-
-        WHILE @Row <= @TotalRows AND @RunningTPL < @NettingAmount
-        BEGIN
-            DECLARE @TPLAmount DECIMAL(18,2);
-            SELECT @TPLAmount = ABS(TotalAmount) FROM #TempTPL WHERE RowNum = @Row;
-
-            DECLARE @AllocAmount_TPL DECIMAL(18,2) =
-                CASE
-                    WHEN @RunningTPL + @TPLAmount <= @NettingAmount THEN @TPLAmount
-                    ELSE @NettingAmount - @RunningTPL
-                END;
-
-            DECLARE @P2_TPL VARCHAR(100), @P3_TPL VARCHAR(100), @P4_TPL VARCHAR(100), @BalanceSource_TPL VARCHAR(100);
-            SELECT @P2_TPL = ProdLevel2, @P3_TPL = ProdLevel3, @P4_TPL = ProdLevel4
-            FROM #TempTPL WHERE RowNum = @Row;
-
-            SET @BalanceSource_TPL = CASE
-                WHEN @P4_TPL IS NOT NULL AND (@P3_TPL IS NOT NULL AND @P2_TPL IS NOT NULL) THEN 'Cross Entity - Business and Diversified'
-                WHEN @P4_TPL IS NOT NULL THEN 'Cross Entity - Business'
-                WHEN @P3_TPL IS NOT NULL THEN 'Cross Entity - Diversified'
-                ELSE NULL
-            END;
-
-            INSERT INTO #Journal_TPL
-            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-                   -@AllocAmount_TPL, @BalanceSource_TPL
-            FROM #TempTPL
-            WHERE RowNum = @Row AND @AllocAmount_TPL > 0;
-
-            SET @RunningTPL += @AllocAmount_TPL;
-            SET @Row += 1;
-        END
-
-        FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
+    ELSE IF @CurrentLevel = 7
+    BEGIN
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
     END
 
-    CLOSE ISIN_CURSOR;
-    DEALLOCATE ISIN_CURSOR;
-
-    -- Final output
-    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
-    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
-END
-
-
------
-
-
-CREATE PROCEDURE sp_AllocateCrossNetting_MultiISIN
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Final output tables
-    IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
-    IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
-
-    CREATE TABLE #Journal_TPA (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2)
-    );
-
-    CREATE TABLE #Journal_TPL (
-        ISIN VARCHAR(20),
-        ProdLevel2 VARCHAR(100),
-        ProdLevel3 VARCHAR(100),
-        ProdLevel4 VARCHAR(100),
-        ProdLevel5 VARCHAR(100),
-        ProdLevel6 VARCHAR(100),
-        ProdLevel7 VARCHAR(100),
-        ProdLevel8 VARCHAR(100),
-        ProdLevel9 VARCHAR(100),
-        ProdLevel10 VARCHAR(100),
-        ProdLevel11 VARCHAR(100),
-        AllocatedAmount DECIMAL(18,2)
-    );
-
-    DECLARE @ISIN VARCHAR(20);
-    DECLARE @NettingAmount DECIMAL(18,2);
-
-    DECLARE ISIN_CURSOR CURSOR FOR
-        SELECT ISIN, GBPIFRSBalanceSheetAmount
-        FROM CrossNetting;
-
-    OPEN ISIN_CURSOR;
-    FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
-
-    WHILE @@FETCH_STATUS = 0
+	
+    ELSE IF @CurrentLevel = 6
     BEGIN
-        -- Temp working tables
-        IF OBJECT_ID('tempdb..#TempTPA') IS NOT NULL DROP TABLE #TempTPA;
-        IF OBJECT_ID('tempdb..#TempTPL') IS NOT NULL DROP TABLE #TempTPL;
-
-        SELECT *, ROW_NUMBER() OVER (
-            ORDER BY 
-                CASE 
-                    WHEN ProdLevel11 IS NOT NULL THEN 1
-                    WHEN ProdLevel10 IS NOT NULL THEN 2
-                    WHEN ProdLevel9 IS NOT NULL THEN 3
-                    WHEN ProdLevel8 IS NOT NULL THEN 4
-                    WHEN ProdLevel7 IS NOT NULL THEN 5
-                    WHEN ProdLevel6 IS NOT NULL THEN 6
-                    WHEN ProdLevel5 IS NOT NULL THEN 7
-                    WHEN ProdLevel4 IS NOT NULL THEN 8
-                    WHEN ProdLevel3 IS NOT NULL THEN 9
-                    WHEN ProdLevel2 IS NOT NULL THEN 10
-                    ELSE 11 
-                END
-        ) AS RowNum
-        INTO #TempTPA
-        FROM BusinessDetails
-        WHERE ISIN = @ISIN AND Type = 'TPA';
-
-        SELECT *, ROW_NUMBER() OVER (
-            ORDER BY 
-                CASE 
-                    WHEN ProdLevel11 IS NOT NULL THEN 1
-                    WHEN ProdLevel10 IS NOT NULL THEN 2
-                    WHEN ProdLevel9 IS NOT NULL THEN 3
-                    WHEN ProdLevel8 IS NOT NULL THEN 4
-                    WHEN ProdLevel7 IS NOT NULL THEN 5
-                    WHEN ProdLevel6 IS NOT NULL THEN 6
-                    WHEN ProdLevel5 IS NOT NULL THEN 7
-                    WHEN ProdLevel4 IS NOT NULL THEN 8
-                    WHEN ProdLevel3 IS NOT NULL THEN 9
-                    WHEN ProdLevel2 IS NOT NULL THEN 10
-                    ELSE 11 
-                END
-        ) AS RowNum
-        INTO #TempTPL
-        FROM BusinessDetails
-        WHERE ISIN = @ISIN AND Type = 'TPL';
-
-        -- TPA Allocation
-        DECLARE @RunningTPA DECIMAL(18,2) = 0;
-        DECLARE @Row INT = 1;
-        DECLARE @TotalRows INT = (SELECT COUNT(*) FROM #TempTPA);
-
-        WHILE @Row <= @TotalRows AND @RunningTPA < @NettingAmount
-        BEGIN
-            DECLARE @TPAAmount DECIMAL(18,2);
-            SELECT @TPAAmount = ABS(TotalAmount) FROM #TempTPA WHERE RowNum = @Row;
-
-            DECLARE @AllocAmount DECIMAL(18,2) =
-                CASE
-                    WHEN @RunningTPA + @TPAAmount <= @NettingAmount THEN @TPAAmount
-                    ELSE @NettingAmount - @RunningTPA
-                END;
-
-            INSERT INTO #Journal_TPA
-            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-                   @AllocAmount
-            FROM #TempTPA
-            WHERE RowNum = @Row AND @AllocAmount > 0;
-
-            SET @RunningTPA += @AllocAmount;
-            SET @Row += 1;
-        END
-
-        -- TPL Allocation
-        DECLARE @RunningTPL DECIMAL(18,2) = 0;
-        SET @Row = 1;
-        SET @TotalRows = (SELECT COUNT(*) FROM #TempTPL);
-
-        WHILE @Row <= @TotalRows AND @RunningTPL < @NettingAmount
-        BEGIN
-            DECLARE @TPLAmount DECIMAL(18,2);
-            SELECT @TPLAmount = ABS(TotalAmount) FROM #TempTPL WHERE RowNum = @Row;
-
-            DECLARE @AllocAmount_TPL DECIMAL(18,2) =
-                CASE
-                    WHEN @RunningTPL + @TPLAmount <= @NettingAmount THEN @TPLAmount
-                    ELSE @NettingAmount - @RunningTPL
-                END;
-
-            INSERT INTO #Journal_TPL
-            SELECT ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5,
-                   ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-                   -@AllocAmount_TPL
-            FROM #TempTPL
-            WHERE RowNum = @Row AND @AllocAmount_TPL > 0;
-
-            SET @RunningTPL += @AllocAmount_TPL;
-            SET @Row += 1;
-        END
-
-        FETCH NEXT FROM ISIN_CURSOR INTO @ISIN, @NettingAmount;
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
+                   ISNULL(tpa.ProdLevel6,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
     END
 
-    CLOSE ISIN_CURSOR;
-    DEALLOCATE ISIN_CURSOR;
+	
+    ELSE IF @CurrentLevel = 5
+    BEGIN
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
 
-    -- Final output
-    SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
-    SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
-END
+
+	
+    ELSE IF @CurrentLevel = 4
+    BEGIN
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
+                   ISNULL(tpa.ProdLevel4,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+
+	
+	
+    ELSE IF @CurrentLevel = 3
+    BEGIN
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,'')) as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
+
+	
+	
+    ELSE IF @CurrentLevel = 2
+    BEGIN
+        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
+        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
+                                       TPARemainingAmount, TPLRemainingAmount)
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel as AllocationLevel,
+            tpa.RowID as TPARowID,
+            tpl.RowID as TPLRowID,
+            CONCAT(ISNULL(tpa.ProdLevel2,''), '') as MatchPath,
+            tpa.OriginalAmount,
+            tpl.OriginalAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+                ELSE ABS(tpl.RemainingAmount)
+            END as AllocatedAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
+                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
+            END as TPARemainingAmount,
+            CASE 
+                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
+                ELSE 0
+            END as TPLRemainingAmount
+        FROM #WorkingData tpa
+        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
+        WHERE tpa.Type = 'TPA' 
+          AND tpl.Type = 'TPL'
+          AND tpa.RemainingAmount < 0
+          AND tpl.RemainingAmount > 0;
+    END
 
 
------
+    -- Add more level-specific logic as needed...
+    
+    -- Check if any allocations were made at this level
+    DECLARE @AllocationsAtLevel INT;
+    SELECT @AllocationsAtLevel = COUNT(*) 
+    FROM #AllocationResults 
+    WHERE AllocationLevel = @CurrentLevel;
+    
+    PRINT 'Allocations made at level ' + CAST(@CurrentLevel AS VARCHAR) + ': ' + CAST(@AllocationsAtLevel AS VARCHAR);
+    
+    -- Update remaining amounts in working table
+    UPDATE wd
+    SET RemainingAmount = ar.TPARemainingAmount
+    FROM #WorkingData wd
+    INNER JOIN #AllocationResults ar ON wd.RowID = ar.TPARowID
+    WHERE ar.AllocationLevel = @CurrentLevel;
+    
+    UPDATE wd
+    SET RemainingAmount = ar.TPLRemainingAmount
+    FROM #WorkingData wd
+    INNER JOIN #AllocationResults ar ON wd.RowID = ar.TPLRowID
+    WHERE ar.AllocationLevel = @CurrentLevel;
+    
+    -- Update remaining cross entity amount
+    SELECT @RemainingCrossEntityAmount = @RemainingCrossEntityAmount - ISNULL(SUM(AllocatedAmount), 0)
+    FROM #AllocationResults
+    WHERE AllocationLevel = @CurrentLevel;
+    
+    -- Move to next level
+    SET @CurrentLevel = @CurrentLevel - 1;
+END;
 
+-- DEBUG: Check what's in allocation results
+PRINT '';
 
-
--- =============================================
--- COMPLETE ISIN-BASED CROSS-ENTITY ALLOCATION SCRIPT
--- SQL Server Version
--- =============================================
-
--- Drop existing tables if they exist
-IF OBJECT_ID('tpl_table', 'U') IS NOT NULL DROP TABLE tpl_table;
-IF OBJECT_ID('tpa_table', 'U') IS NOT NULL DROP TABLE tpa_table;
-IF OBJECT_ID('cross_entity_table', 'U') IS NOT NULL DROP TABLE cross_entity_table;
-
--- =============================================
--- SECTION 1: CREATE TABLES
--- =============================================
-
-PRINT 'Creating tables...';
-
--- Table 1: Cross Entity ISIN Data (Simple: ISIN + Amount only)
-CREATE TABLE cross_entity_table (
-    id INT IDENTITY(1,1) PRIMARY KEY,
-    isin VARCHAR(20),
-    gbp_ifrs_balance_sheet_amount DECIMAL(18,2)
-);
-
--- Table 2: TPA Business Level Data (ISIN + Full hierarchy with positive amounts)
-CREATE TABLE tpa_table (
-    id INT IDENTITY(1,1) PRIMARY KEY,
-    isin VARCHAR(20),
-    balance_classification VARCHAR(50),
-    prod_level_2 VARCHAR(50),
-    prod_level_3 VARCHAR(50),
-    prod_level_4 VARCHAR(100),
-    prod_level_5 VARCHAR(100),
-    prod_level_6 VARCHAR(100),
-    prod_level_7 VARCHAR(100),
-    prod_level_8 VARCHAR(100),
-    prod_level_9 VARCHAR(100),
-    prod_level_10 VARCHAR(100),
-    total_amount DECIMAL(18,2)
-);
-
--- Table 3: TPL Business Level Data (ISIN + Full hierarchy with negative amounts)
-CREATE TABLE tpl_table (
-    id INT IDENTITY(1,1) PRIMARY KEY,
-    isin VARCHAR(20),
-    balance_classification VARCHAR(50),
-    prod_level_2 VARCHAR(50),
-    prod_level_3 VARCHAR(50),
-    prod_level_4 VARCHAR(100),
-    prod_level_5 VARCHAR(100),
-    prod_level_6 VARCHAR(100),
-    prod_level_7 VARCHAR(100),
-    prod_level_8 VARCHAR(100),
-    prod_level_9 VARCHAR(100),
-    prod_level_10 VARCHAR(100),
-    total_amount DECIMAL(18,2)
-);
-
-PRINT 'Tables created successfully.';
-
--- =============================================
--- SECTION 2: INSERT TEST DATA
--- =============================================
-
-PRINT 'Inserting test data...';
-
--- Table 1: Cross Entity ISIN Data (only ISIN and amount)
-INSERT INTO cross_entity_table (isin, gbp_ifrs_balance_sheet_amount)
-VALUES 
-('CH0012221716', 6964368.00),
-('GB00B4L5Y983', -2500000.00),
-('US0378331005', 1800000.00),
-('DE0007164600', -3200000.00),
-('JP3633400001', 950000.00),
-('FR0000120321', -1150000.00),
-('NL0000235190', 780000.00),
-('CH0038863350', -890000.00),
-('GB00BH4HKS39', 1200000.00),
-('US88160R1014', -750000.00);
-
--- Table 2: TPA Business Level Data with ISINs (positive amounts)
-INSERT INTO tpa_table (isin, balance_classification, prod_level_2, prod_level_3, prod_level_4, prod_level_5, prod_level_6, prod_level_7, prod_level_8, prod_level_9, prod_level_10, total_amount)
-VALUES 
--- ISIN: CH0012221716 (Largest cross-entity amount)
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Capcom', 'Inventory', 1253.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Inventory Central Risk', 'Inventory', 2691.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Flow Derivatives -EMEA', 'Stocks', 'SS-Auto-Ind-Consumers', 'Flow - Industrials', 1563957.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Custom Baskets', 391385.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'DM', 1122865.00),
-
--- ISIN: GB00B4L5Y983 
-('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Long Term', 'Illiquid - Non-Standard Fwd', 13930.00),
-('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Global Bench', 24801.00),
-('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Sector/EU Custom/SS/ETF', 'Sector', 'Termed', 844268.00),
-
--- ISIN: US0378331005
-('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'Other', 19.00),
-('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'Pswaps', 'Pswap', 'Pswap', 1.00),
-
--- ISIN: DE0007164600
-('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Structured Derivs EMEA', 'QIS', 'QIS Linear', 'Equity QIS', 'Dynamic Baskets', 25000.00),
-('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'CFD', 'CFD', 'CFD', 15000.00),
-
--- ISIN: JP3633400001
-('JP3633400001', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'D1 Inventory', 'Lux Index Investments', 'Lux Index Investments', 85000.00),
-
--- ISIN: FR0000120321
-('FR0000120321', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Liquidation Central Risk', 'Liquidation', 45000.00),
-
--- ISIN: NL0000235190
-('NL0000235190', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'OMX', 12000.00),
-
--- ISIN: CH0038863350
-('CH0038863350', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', 35000.00),
-
--- ISIN: GB00BH4HKS39
-('GB00BH4HKS39', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Core Funding', 75000.00),
-
--- ISIN: US88160R1014
-('US88160R1014', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', 8500.00);
-
--- Table 3: TPL Business Level Data with ISINs (negative amounts)
-INSERT INTO tpl_table (isin, balance_classification, prod_level_2, prod_level_3, prod_level_4, prod_level_5, prod_level_6, prod_level_7, prod_level_8, prod_level_9, prod_level_10, total_amount)
-VALUES 
--- ISIN: CH0012221716 (Largest cross-entity amount) - Corresponding TPL negative amounts
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Delta-1 Flow', -15790674.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'D1 Inventory', 'Lux Index Investments', 'Lux Index Investments', -4717120.00),
-('CH0012221716', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'CFD', 'CFD', 'CFD', -138262.00),
-
--- ISIN: GB00B4L5Y983 - TPL negative amounts
-('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', -81541.00),
-('GB00B4L5Y983', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'OMX', -42.00),
-
--- ISIN: US0378331005 - TPL negative amounts
-('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', -3.00),
-('US0378331005', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'MSCI / Global Benchmarks/Synth ETF', 'Global Custom & Other', 'DM', -1.00),
-
--- ISIN: DE0007164600 - TPL negative amounts
-('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Structured Derivatives', 'Flow Derivatives EMEA', 'Exotics', 'Stocks', 'Stocks', 'MULTIFACTOR', -125000.00),
-('DE0007164600', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Synthetics PB', 'Pswaps', 'Pswap', 'Pswap', -85000.00),
-
--- ISIN: JP3633400001 - TPL negative amounts
-('JP3633400001', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Sector/EU Custom/SS/ETF', 'CIB', 'Open swaps', -95000.00),
-
--- ISIN: FR0000120321 - TPL negative amounts
-('FR0000120321', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Cash Equities', 'EQ High Touch Cash', 'HT Cash EMEA', 'HT Cash Europe', 'Central Risk', 'Inventory Central Risk', 'Inventory', -65000.00),
-
--- ISIN: NL0000235190 - TPL negative amounts
-('NL0000235190', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Long Term', 'Illiquid - Non-Standard Fwd', -18000.00),
-
--- ISIN: CH0038863350 - TPL negative amounts
-('CH0038863350', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Flow Derivatives', 'Flow Derivatives EMEA', 'Flow Derivatives -EMEA', 'Stocks', 'SS-Auto-Ind-Consumers', 'Flow - Industrials', -45000.00),
-
--- ISIN: GB00BH4HKS39 - TPL negative amounts
-('GB00BH4HKS39', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Financing', 'EMEA', 'Cash PB in Scope', 'ESG Collateral Management', 'Funding Client', 'Core Funding', -95000.00),
-
--- ISIN: US88160R1014 - TPL negative amounts
-('US88160R1014', 'Sum of GBP Currency Amount', 'Markets', 'Equities', 'Prime', 'Prime Delta 1', 'EMEA', 'Delta One Synthetics', 'Index', 'Short Term', 'SMI', -12000.00);
-
-PRINT 'Test data inserted successfully.';
-
--- =============================================
--- SECTION 3: DATA VALIDATION
--- =============================================
-
-PRINT 'Validating test data...';
-
--- Check Cross Entity ISIN totals
-SELECT 'Cross Entity ISIN Total' as TableName, 
-       SUM(gbp_ifrs_balance_sheet_amount) as Total_Amount, 
-       COUNT(*) as Row_Count,
-       COUNT(DISTINCT isin) as Unique_ISINs
-FROM cross_entity_table;
-
--- Check TPA totals by ISIN (should be positive)
-SELECT 'TPA by ISIN' as TableName, 
-       isin,
-       SUM(total_amount) as Total_Amount, 
-       COUNT(*) as Row_Count 
-FROM tpa_table
-GROUP BY isin
-ORDER BY SUM(total_amount) DESC;
-
--- Check TPL totals by ISIN (should be negative)
-SELECT 'TPL by ISIN' as TableName, 
-       isin,
-       SUM(total_amount) as Total_Amount, 
-       COUNT(*) as Row_Count 
-FROM tpl_table
-GROUP BY isin
-ORDER BY SUM(total_amount);
-
--- Verify ISIN matching between tables
+-- Final Results Summary
 SELECT 
-    ce.isin as CrossEntity_ISIN,
-    CASE WHEN tpa.isin IS NOT NULL THEN 'YES' ELSE 'NO' END as Has_TPA_Data,
-    CASE WHEN tpl.isin IS NOT NULL THEN 'YES' ELSE 'NO' END as Has_TPL_Data,
-    ce.gbp_ifrs_balance_sheet_amount as CrossEntity_Amount
-FROM cross_entity_table ce
-LEFT JOIN (SELECT DISTINCT isin FROM tpa_table) tpa ON ce.isin = tpa.isin
-LEFT JOIN (SELECT DISTINCT isin FROM tpl_table) tpl ON ce.isin = tpl.isin
-ORDER BY ce.isin;
+    'Allocation Summary' as ReportType,
+    ISIN,
+    AllocationLevel,
+    COUNT(*) as NumberOfAllocations,
+    SUM(AllocatedAmount) as TotalAllocated
+FROM #AllocationResults
+GROUP BY ISIN, AllocationLevel
+ORDER BY AllocationLevel DESC;
 
-PRINT 'Data validation completed.';
-
--- =============================================
--- SECTION 4: CROSS-ENTITY ALLOCATION QUERY
--- =============================================
-
-PRINT 'Running ISIN-based cross-entity allocation...';
-
-WITH cross_entity_isin AS (
-    -- ISIN Cross Entity amounts to be allocated
-    SELECT 
-        isin,
-        gbp_ifrs_balance_sheet_amount as cross_entity_amount
-    FROM cross_entity_table
-    WHERE gbp_ifrs_balance_sheet_amount IS NOT NULL AND gbp_ifrs_balance_sheet_amount <> 0
-),
-
-tpa_business_by_isin AS (
-    -- TPA Business Level Data with hierarchy keys, grouped by ISIN
-    SELECT 
-        isin,
-        prod_level_2,
-        prod_level_3,
-        prod_level_4, 
-        prod_level_5,
-        prod_level_6,
-        prod_level_7,
-        prod_level_8,
-        prod_level_9,
-        prod_level_10,
-        total_amount as tpa_amount,
-        ABS(total_amount) as tpa_abs_amount,
-        -- Create hierarchy keys for matching at different levels
-        prod_level_2 as level2_key,
-        CONCAT(prod_level_2, '|', prod_level_3) as level3_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4) as level4_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5) as level5_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6) as level6_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7) as level7_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8) as level8_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9) as level9_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9, '|', prod_level_10) as level10_key,
-        -- Determine most granular level with data
-        CASE 
-            WHEN prod_level_10 IS NOT NULL AND prod_level_10 <> '' THEN 10
-            WHEN prod_level_9 IS NOT NULL AND prod_level_9 <> '' THEN 9
-            WHEN prod_level_8 IS NOT NULL AND prod_level_8 <> '' THEN 8
-            WHEN prod_level_7 IS NOT NULL AND prod_level_7 <> '' THEN 7
-            WHEN prod_level_6 IS NOT NULL AND prod_level_6 <> '' THEN 6
-            WHEN prod_level_5 IS NOT NULL AND prod_level_5 <> '' THEN 5
-            WHEN prod_level_4 IS NOT NULL AND prod_level_4 <> '' THEN 4
-            WHEN prod_level_3 IS NOT NULL AND prod_level_3 <> '' THEN 3
-            ELSE 2
-        END as tpa_granular_level
-    FROM tpa_table
-    WHERE total_amount IS NOT NULL AND total_amount <> 0
-),
-
-tpl_business_by_isin AS (
-    -- TPL Business Level Data with hierarchy keys, grouped by ISIN
-    SELECT 
-        isin,
-        prod_level_2,
-        prod_level_3,
-        prod_level_4,
-        prod_level_5,
-        prod_level_6,
-        prod_level_7,
-        prod_level_8,
-        prod_level_9,
-        prod_level_10,
-        total_amount as tpl_amount,
-        ABS(total_amount) as tpl_abs_amount,  -- Use absolute value for negative amounts
-        -- Create hierarchy keys for matching at different levels
-        prod_level_2 as level2_key,
-        CONCAT(prod_level_2, '|', prod_level_3) as level3_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4) as level4_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5) as level5_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6) as level6_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7) as level7_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8) as level8_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9) as level9_key,
-        CONCAT(prod_level_2, '|', prod_level_3, '|', prod_level_4, '|', prod_level_5, '|', prod_level_6, '|', prod_level_7, '|', prod_level_8, '|', prod_level_9, '|', prod_level_10) as level10_key,
-        -- Determine most granular level with data
-        CASE 
-            WHEN prod_level_10 IS NOT NULL AND prod_level_10 <> '' THEN 10
-            WHEN prod_level_9 IS NOT NULL AND prod_level_9 <> '' THEN 9
-            WHEN prod_level_8 IS NOT NULL AND prod_level_8 <> '' THEN 8
-            WHEN prod_level_7 IS NOT NULL AND prod_level_7 <> '' THEN 7
-            WHEN prod_level_6 IS NOT NULL AND prod_level_6 <> '' THEN 6
-            WHEN prod_level_5 IS NOT NULL AND prod_level_5 <> '' THEN 5
-            WHEN prod_level_4 IS NOT NULL AND prod_level_4 <> '' THEN 4
-            WHEN prod_level_3 IS NOT NULL AND prod_level_3 <> '' THEN 3
-            ELSE 2
-        END as tpl_granular_level
-    FROM tpl_table
-    WHERE total_amount IS NOT NULL AND total_amount <> 0
-),
-
--- TPA Allocation Weights (calculated per ISIN)
-tpa_allocation_weights AS (
-    SELECT 
-        ce.isin,
-        ce.cross_entity_amount,
-        tpa.prod_level_2,
-        tpa.prod_level_3,
-        tpa.prod_level_4,
-        tpa.prod_level_5,
-        tpa.prod_level_6,
-        tpa.prod_level_7,
-        tpa.prod_level_8,
-        tpa.prod_level_9,
-        tpa.prod_level_10,
-        tpa.tpa_amount,
-        tpa.tpa_abs_amount,
-        tpa.tpa_granular_level,
-        -- Calculate allocation weight within each ISIN
-        tpa.tpa_abs_amount / NULLIF(SUM(tpa.tpa_abs_amount) OVER(PARTITION BY ce.isin), 0) as tpa_weight,
-        -- Rank by granular level within each ISIN (most granular gets priority)
-        ROW_NUMBER() OVER(PARTITION BY ce.isin ORDER BY tpa.tpa_granular_level DESC, tpa.tpa_abs_amount DESC) as tpa_priority
-    FROM cross_entity_isin ce
-    INNER JOIN tpa_business_by_isin tpa ON ce.isin = tpa.isin
-    WHERE tpa.tpa_abs_amount > 0
-),
-
--- TPL Allocation Weights (calculated per ISIN)
-tpl_allocation_weights AS (
-    SELECT 
-        ce.isin,
-        ce.cross_entity_amount,
-        tpl.prod_level_2,
-        tpl.prod_level_3,
-        tpl.prod_level_4,
-        tpl.prod_level_5,
-        tpl.prod_level_6,
-        tpl.prod_level_7,
-        tpl.prod_level_8,
-        tpl.prod_level_9,
-        tpl.prod_level_10,
-        tpl.tpl_amount,
-        tpl.tpl_abs_amount,
-        tpl.tpl_granular_level,
-        -- Calculate allocation weight within each ISIN
-        tpl.tpl_abs_amount / NULLIF(SUM(tpl.tpl_abs_amount) OVER(PARTITION BY ce.isin), 0) as tpl_weight,
-        -- Rank by granular level within each ISIN (most granular gets priority)
-        ROW_NUMBER() OVER(PARTITION BY ce.isin ORDER BY tpl.tpl_granular_level DESC, tpl.tpl_abs_amount DESC) as tpl_priority
-    FROM cross_entity_isin ce
-    INNER JOIN tpl_business_by_isin tpl ON ce.isin = tpl.isin
-    WHERE tpl.tpl_abs_amount > 0
-),
-
--- TPA Journal Entries
-tpa_journal AS (
-    SELECT 
-        'TPA' as journal_type,
-        isin,
-        cross_entity_amount,
-        prod_level_2,
-        prod_level_3,
-        prod_level_4,
-        prod_level_5,
-        prod_level_6,
-        prod_level_7,
-        prod_level_8,
-        prod_level_9,
-        prod_level_10,
-        tpa_granular_level as allocated_level,
-        tpa_amount as business_amount,
-        tpa_abs_amount as weight_basis,
-        tpa_weight as allocation_weight,
-        cross_entity_amount * tpa_weight as allocated_amount,
-        -- Journal Entry Details
-        'Cross Entity Netting' as debit_account,
-        CONCAT('TPA-', isin, '-', prod_level_2, '-', prod_level_4) as credit_account,
-        ABS(cross_entity_amount * tpa_weight) as journal_amount,
-        CASE 
-            WHEN cross_entity_amount * tpa_weight >= 0 THEN 'DR' 
-            ELSE 'CR' 
-        END as debit_credit_indicator,
-        ROW_NUMBER() OVER(ORDER BY ABS(cross_entity_amount * tpa_weight) DESC) as journal_entry_number
-    FROM tpa_allocation_weights
-),
-
--- TPL Journal Entries
-tpl_journal AS (
-    SELECT 
-        'TPL' as journal_type,
-        isin,
-        cross_entity_amount,
-        prod_level_2,
-        prod_level_3,
-        prod_level_4,
-        prod_level_5,
-        prod_level_6,
-        prod_level_7,
-        prod_level_8,
-        prod_level_9,
-        prod_level_10,
-        tpl_granular_level as allocated_level,
-        tpl_amount as business_amount,
-        tpl_abs_amount as weight_basis,
-        tpl_weight as allocation_weight,
-        cross_entity_amount * tpl_weight as allocated_amount,
-        -- Journal Entry Details
-        'Cross Entity Netting' as debit_account,
-        CONCAT('TPL-', isin, '-', prod_level_2, '-', prod_level_4) as credit_account,
-        ABS(cross_entity_amount * tpl_weight) as journal_amount,
-        CASE 
-            WHEN cross_entity_amount * tpl_weight >= 0 THEN 'DR' 
-            ELSE 'CR' 
-        END as debit_credit_indicator,
-        ROW_NUMBER() OVER(ORDER BY ABS(cross_entity_amount * tpl_weight) DESC) as journal_entry_number
-    FROM tpl_allocation_weights
-)
-
--- =============================================
--- RESULTS OUTPUT
--- =============================================
+-- Detailed Allocation Results
 SELECT 
-    'TPA_JOURNAL' as result_type,
-    journal_entry_number,
-    journal_type,
-    isin,
-    allocated_level,
-    prod_level_2,
-    prod_level_3,
-    prod_level_4,
-    prod_level_5,
-    prod_level_6,
-    prod_level_7,
-    prod_level_8,
-    prod_level_9,
-    prod_level_10,
-    debit_account,
-    credit_account,
-    debit_credit_indicator,
-    journal_amount,
-    allocated_amount,
-    business_amount,
-    weight_basis,
-    allocation_weight,
-    cross_entity_amount,
-    'TPA Cross-Entity ISIN Allocation' as journal_description
-FROM tpa_journal
-WHERE ABS(allocated_amount) > 0.01  -- Filter out very small amounts
+    ar.AllocationID,
+    ar.ISIN,
+    ar.AllocationLevel,
+    ar.MatchPath,
+    ar.TPAOriginalAmount,
+    ar.TPLOriginalAmount,
+    ar.AllocatedAmount,
+    ar.TPARemainingAmount,
+    ar.TPLRemainingAmount
+FROM #AllocationResults ar
+ORDER BY ar.AllocationLevel DESC, ar.AllocationID;
 
-UNION ALL
-
+-- Show unallocated amounts
+PRINT '';
+PRINT 'Unallocated amounts:';
 SELECT 
-    'TPL_JOURNAL' as result_type,
-    journal_entry_number,
-    journal_type,
-    isin,
-    allocated_level,
-    prod_level_2,
-    prod_level_3,
-    prod_level_4,
-    prod_level_5,
-    prod_level_6,
-    prod_level_7,
-    prod_level_8,
-    prod_level_9,
-    prod_level_10,
-    debit_account,
-    credit_account,
-    debit_credit_indicator,
-    journal_amount,
-    allocated_amount,
-    business_amount,
-    weight_basis,
-    allocation_weight,
-    cross_entity_amount,
-    'TPL Cross-Entity ISIN Allocation' as journal_description
-FROM tpl_journal
-WHERE ABS(allocated_amount) > 0.01  -- Filter out very small amounts
+    Type,
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
+    OriginalAmount,
+    RemainingAmount
+FROM #WorkingData
+WHERE (Type = 'TPA' AND RemainingAmount < 0)
+   OR (Type = 'TPL' AND RemainingAmount > 0)
+ORDER BY Type, RowID;
 
-UNION ALL
-
+-- Cross Entity Summary
 SELECT 
-    'ISIN_SUMMARY' as result_type,
-    NULL as journal_entry_number,
-    journal_type,
-    isin,
-    NULL as allocated_level,
-    NULL as prod_level_2,
-    NULL as prod_level_3,
-    NULL as prod_level_4,
-    NULL as prod_level_5,
-    NULL as prod_level_6,
-    NULL as prod_level_7,
-    NULL as prod_level_8,
-    NULL as prod_level_9,
-    NULL as prod_level_10,
-    NULL as debit_account,
-    NULL as credit_account,
-    NULL as debit_credit_indicator,
-    SUM(journal_amount) as journal_amount,
-    SUM(allocated_amount) as allocated_amount,
-    NULL as business_amount,
-    NULL as weight_basis,
-    NULL as allocation_weight,
-    MAX(cross_entity_amount) as cross_entity_amount,
-    CONCAT(journal_type, ' Total for ISIN: ', isin) as journal_description
-FROM (
-    SELECT journal_type, isin, journal_amount, allocated_amount, cross_entity_amount FROM tpa_journal
-    UNION ALL
-    SELECT journal_type, isin, journal_amount, allocated_amount, cross_entity_amount FROM tpl_journal
-) combined_by_isin
-GROUP BY journal_type, isin
+    cn.ISIN,
+    cn.GBPIFRSBalanceSheetAmount as TotalCrossEntityAmount,
+    ISNULL(SUM(ar.AllocatedAmount), 0) as TotalAllocated,
+    cn.GBPIFRSBalanceSheetAmount - ISNULL(SUM(ar.AllocatedAmount), 0) as RemainingUnallocated
+FROM CrossNetting cn
+LEFT JOIN #AllocationResults ar ON cn.ISIN = ar.ISIN
+GROUP BY cn.ISIN, cn.GBPIFRSBalanceSheetAmount;
 
-UNION ALL
 
-SELECT 
-    'GRAND_SUMMARY' as result_type,
-    NULL as journal_entry_number,
-    journal_type,
-    NULL as isin,
-    NULL as allocated_level,
-    NULL as prod_level_2,
-    NULL as prod_level_3,
-    NULL as prod_level_4,
-    NULL as prod_level_5,
-    NULL as prod_level_6,
-    NULL as prod_level_7,
-    NULL as prod_level_8,
-    NULL as prod_level_9,
-    NULL as prod_level_10,
-    NULL as debit_account,
-    NULL as credit_account,
-    NULL as debit_credit_indicator,
-    SUM(journal_amount) as journal_amount,
-    SUM(allocated_amount) as allocated_amount,
-    NULL as business_amount,
-    NULL as weight_basis,
-    NULL as allocation_weight,
-    NULL as cross_entity_amount,
-    CONCAT('GRAND TOTAL - ', journal_type, ' Journal') as journal_description
-FROM (
-    SELECT journal_type, journal_amount, allocated_amount FROM tpa_journal
-    UNION ALL
-    SELECT journal_type, journal_amount, allocated_amount FROM tpl_journal
-) grand_total
-GROUP BY journal_type
 
-UNION ALL
-
-SELECT 
-    'VALIDATION' as result_type,
-    NULL as journal_entry_number,
-    'VALIDATION' as journal_type,
-    NULL as isin,
-    NULL as allocated_level,
-    NULL as prod_level_2,
-    NULL as prod_level_3,
-    'Cross Entity Total' as prod_level_4,
-    NULL as prod_level_5,
-    NULL as prod_level_6,
-    NULL as prod_level_7,
-    NULL as prod_level_8,
-    NULL as prod_level_9,
-    NULL as prod_level_10,
-    NULL as debit_account,
-    NULL as credit_account,
-    NULL as debit_credit_indicator,
-    SUM(gbp_ifrs_balance_sheet_amount) as journal_amount,
-    SUM(gbp_ifrs_balance_sheet_amount) as allocated_amount,
-    NULL as business_amount,
-    NULL as weight_basis,
-    NULL as allocation_weight,
-    SUM(gbp_ifrs_balance_sheet_amount) as cross_entity_amount,
-    'Original Cross Entity Total (should match allocated totals)' as journal_description
-FROM cross_entity_table
-
-ORDER BY 
-    result_type,
-    journal_type,
-    isin,
-    journal_entry_number;
-
-PRINT 'Cross-entity allocation completed successfully!';
-
--- =============================================
--- SCRIPT COMPLETION
--- =============================================
-
-PRINT '================================================================';
-PRINT 'SCRIPT EXECUTION COMPLETED';
-PRINT '================================================================';
-PRINT 'Tables Created: cross_entity_table, tpa_table, tpl_table';
-PRINT 'Test Data: 10 ISINs with TPA and TPL business level exposures';
-PRINT 'Allocation: ISIN-based allocation to TPA and TPL journals';
-PRINT 'Results: View by result_type (TPA_JOURNAL, TPL_JOURNAL, etc.)';
-PRINT '================================================================';
