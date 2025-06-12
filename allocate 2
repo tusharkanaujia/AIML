@@ -1,120 +1,458 @@
--- Final cleaned and corrected version of sp_AllocateCrossNetting_Hierarchical -- Fixes large ORDER BY issue and replaces references to invalid alias
+-- Create temporary tables to store the data
+CREATE TABLE #CrossNetting (
+    ISIN VARCHAR(50),
+    GBPIFRSBalanceSheetAmount DECIMAL(20,2)
+);
 
-CREATE PROCEDURE sp_AllocateCrossNetting_Hierarchical AS BEGIN SET NOCOUNT ON;
-
-IF OBJECT_ID('tempdb..#TPA') IS NOT NULL DROP TABLE #TPA;
-IF OBJECT_ID('tempdb..#TPL') IS NOT NULL DROP TABLE #TPL;
-IF OBJECT_ID('tempdb..#CrossNetting') IS NOT NULL DROP TABLE #CrossNetting;
-IF OBJECT_ID('tempdb..#Journal_TPA') IS NOT NULL DROP TABLE #Journal_TPA;
-IF OBJECT_ID('tempdb..#Journal_TPL') IS NOT NULL DROP TABLE #Journal_TPL;
-IF OBJECT_ID('tempdb..#Validation') IS NOT NULL DROP TABLE #Validation;
-
-SELECT * INTO #TPA FROM BusinessDetails WHERE Type = 'TPA';
-SELECT * INTO #TPL FROM BusinessDetails WHERE Type = 'TPL';
-SELECT * INTO #CrossNetting FROM CrossNetting;
-
-CREATE TABLE #Journal_TPA (
-    ISIN VARCHAR(20),
-    ProdLevel2 VARCHAR(100), ProdLevel3 VARCHAR(100), ProdLevel4 VARCHAR(100),
-    ProdLevel5 VARCHAR(100), ProdLevel6 VARCHAR(100), ProdLevel7 VARCHAR(100),
-    ProdLevel8 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel10 VARCHAR(100),
+CREATE TABLE #BusinessDetails (
+    ISIN VARCHAR(50),
+    Type VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
     ProdLevel11 VARCHAR(100),
-    AllocatedAmount DECIMAL(18,2),
-    BalanceSource VARCHAR(100)
+    TotalAmount DECIMAL(20,2)
 );
 
-CREATE TABLE #Journal_TPL (
-    ISIN VARCHAR(20),
-    ProdLevel2 VARCHAR(100), ProdLevel3 VARCHAR(100), ProdLevel4 VARCHAR(100),
-    ProdLevel5 VARCHAR(100), ProdLevel6 VARCHAR(100), ProdLevel7 VARCHAR(100),
-    ProdLevel8 VARCHAR(100), ProdLevel9 VARCHAR(100), ProdLevel10 VARCHAR(100),
+-- Test data
+INSERT INTO #CrossNetting ([ISIN], [GBPIFRSBalanceSheetAmount])
+VALUES
+( 'DE0001135481', 28605.00 );
+
+INSERT INTO #BusinessDetails ([ISIN], [Type], [ProdLevel2], [ProdLevel3], [ProdLevel4], [ProdLevel5], [ProdLevel6], [ProdLevel7], [ProdLevel8], [ProdLevel9], [ProdLevel10], [ProdLevel11], [TotalAmount])
+VALUES
+( 'DE0001135481', 'TPA', 'Banking', 'Fixed Income Syndicate', 'Syndicate', 'Investment Grade', 'Investment Grade Bonds', 'EMEA IG Bonds', 'Corporates', 'Corporates', 'CP13905 - UK IG Corporate', NULL, -0.01 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Credit', 'FI Credit', 'Illiquid Credit', 'Global Illiquids Trading', 'Illiquids Flow', 'Illiquids - Credit', 'Illiquids - Credit', 'Bayram Massaoudi - Credit', NULL, -14794.39 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, -0.01 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Structured Rates Trading', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives EUR Global Government', 'EUR Global Govt', NULL, -13810.72 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Giles Schepers', NULL, 0.00 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Ku Fatar', NULL, 25012745.06 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, 0.02 );
+
+-- Create a working table with row identifiers
+CREATE TABLE #WorkingData (
+    RowID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    Type VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
     ProdLevel11 VARCHAR(100),
-    AllocatedAmount DECIMAL(18,2),
-    BalanceSource VARCHAR(100)
+    OriginalAmount DECIMAL(20,2),
+    RemainingAmount DECIMAL(20,2),
+    IsAllocated BIT DEFAULT 0
 );
 
-CREATE TABLE #Validation (
-    ISIN VARCHAR(20),
-    NettingAmount DECIMAL(18,2),
-    TPA_Total DECIMAL(18,2),
-    TPL_Total DECIMAL(18,2),
-    Difference DECIMAL(18,2)
+-- Insert data into working table - IMPORTANT: Ensure TPA amounts are negative
+INSERT INTO #WorkingData (ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, OriginalAmount, RemainingAmount)
+SELECT 
+    ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
+    CASE 
+        WHEN Type = 'TPA' AND TotalAmount > 0 THEN -TotalAmount  -- Ensure TPA is negative
+        ELSE TotalAmount
+    END,
+    CASE 
+        WHEN Type = 'TPA' AND TotalAmount > 0 THEN -TotalAmount  -- Ensure TPA is negative
+        ELSE TotalAmount
+    END
+FROM #BusinessDetails;
+
+-- Create allocation results table
+CREATE TABLE #AllocationResults (
+    AllocationID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    AllocationLevel INT,
+    TPARowID INT,
+    TPLRowID INT,
+    MatchPath VARCHAR(1000),
+    TPAOriginalAmount DECIMAL(20,2),
+    TPLOriginalAmount DECIMAL(20,2),
+    AllocatedAmount DECIMAL(20,2),
+    TPARemainingBefore DECIMAL(20,2),
+    TPLRemainingBefore DECIMAL(20,2),
+    TPARemainingAfter DECIMAL(20,2),
+    TPLRemainingAfter DECIMAL(20,2)
 );
 
-;WITH TPA_TPL_Matches AS (
-    SELECT
-        tpa.ISIN,
-        tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, tpa.ProdLevel6,
-        tpa.ProdLevel7, tpa.ProdLevel8, tpa.ProdLevel9, tpa.ProdLevel10, tpa.ProdLevel11,
-        tpl.ProdLevel2 AS TPL_ProdLevel2, tpl.ProdLevel3 AS TPL_ProdLevel3,
-        tpl.ProdLevel4 AS TPL_ProdLevel4, tpl.ProdLevel5 AS TPL_ProdLevel5,
-        tpl.ProdLevel6 AS TPL_ProdLevel6, tpl.ProdLevel7 AS TPL_ProdLevel7,
-        tpl.ProdLevel8 AS TPL_ProdLevel8, tpl.ProdLevel9 AS TPL_ProdLevel9,
-        tpl.ProdLevel10 AS TPL_ProdLevel10, tpl.ProdLevel11 AS TPL_ProdLevel11,
-        ABS(tpa.TotalAmount) AS AbsTPA, ABS(tpl.TotalAmount) AS AbsTPL,
-        ROW_NUMBER() OVER (PARTITION BY tpa.ISIN ORDER BY NEWID()) AS RowRank
-    FROM #TPA tpa
-    INNER JOIN #TPL tpl ON tpa.ISIN = tpl.ISIN
-),
-LimitedAlloc AS (
-    SELECT m.*, cn.GBPIFRSBalanceSheetAmount,
-           CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END AS MinPair,
-           SUM(CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END) OVER (PARTITION BY m.ISIN ORDER BY RowRank ROWS UNBOUNDED PRECEDING) AS RunningTotal,
-           SUM(CASE WHEN m.AbsTPA < m.AbsTPL THEN m.AbsTPA ELSE m.AbsTPL END) OVER (PARTITION BY m.ISIN ORDER BY RowRank ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS PrevRunningTotal
-    FROM TPA_TPL_Matches m
-    INNER JOIN #CrossNetting cn ON m.ISIN = cn.ISIN
-)
+-- DEBUG: Show starting data
+PRINT 'Starting data:';
+SELECT Type, ProdLevel2, ProdLevel3, ProdLevel4, OriginalAmount, RemainingAmount
+FROM #WorkingData
+ORDER BY Type, RowID;
 
-INSERT INTO #Journal_TPA
-SELECT
-    ISIN, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6,
-    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
-    CASE
-        WHEN GBPIFRSBalanceSheetAmount >= RunningTotal THEN MinPair
-        WHEN GBPIFRSBalanceSheetAmount > PrevRunningTotal THEN GBPIFRSBalanceSheetAmount - PrevRunningTotal
-        ELSE 0
-    END AS AllocatedAmount,
-    CASE
-        WHEN ProdLevel4 IS NOT NULL AND ProdLevel3 IS NOT NULL THEN 'Cross Entity - Business and Diversified'
-        WHEN ProdLevel4 IS NOT NULL THEN 'Cross Entity - Business'
-        WHEN ProdLevel3 IS NOT NULL THEN 'Cross Entity - Diversified'
-        ELSE NULL
-    END AS BalanceSource
-FROM LimitedAlloc
-WHERE (GBPIFRSBalanceSheetAmount >= RunningTotal OR GBPIFRSBalanceSheetAmount > PrevRunningTotal);
+-- Variables for processing
+DECLARE @CurrentLevel INT = 11;
+DECLARE @TotalCrossEntityAmount DECIMAL(20,2);
+DECLARE @RemainingCrossEntityAmount DECIMAL(20,2);
 
-INSERT INTO #Journal_TPL
-SELECT
-    ISIN, TPL_ProdLevel2, TPL_ProdLevel3, TPL_ProdLevel4, TPL_ProdLevel5, TPL_ProdLevel6,
-    TPL_ProdLevel7, TPL_ProdLevel8, TPL_ProdLevel9, TPL_ProdLevel10, TPL_ProdLevel11,
-    -CASE
-        WHEN GBPIFRSBalanceSheetAmount >= RunningTotal THEN MinPair
-        WHEN GBPIFRSBalanceSheetAmount > PrevRunningTotal THEN GBPIFRSBalanceSheetAmount - PrevRunningTotal
-        ELSE 0
-    END AS AllocatedAmount,
-    CASE
-        WHEN TPL_ProdLevel4 IS NOT NULL AND TPL_ProdLevel3 IS NOT NULL THEN 'Cross Entity - Business and Diversified'
-        WHEN TPL_ProdLevel4 IS NOT NULL THEN 'Cross Entity - Business'
-        WHEN TPL_ProdLevel3 IS NOT NULL THEN 'Cross Entity - Diversified'
-        ELSE NULL
-    END AS BalanceSource
-FROM LimitedAlloc
-WHERE (GBPIFRSBalanceSheetAmount >= RunningTotal OR GBPIFRSBalanceSheetAmount > PrevRunningTotal);
+SELECT @TotalCrossEntityAmount = GBPIFRSBalanceSheetAmount,
+       @RemainingCrossEntityAmount = GBPIFRSBalanceSheetAmount
+FROM #CrossNetting;
 
-INSERT INTO #Validation
-SELECT
-    c.ISIN,
-    c.GBPIFRSBalanceSheetAmount,
-    ISNULL(t.TotalTPA,0),
-    ISNULL(p.TotalTPL,0),
-    c.GBPIFRSBalanceSheetAmount - ISNULL(t.TotalTPA,0)
-FROM #CrossNetting c
-LEFT JOIN (SELECT ISIN, SUM(AllocatedAmount) AS TotalTPA FROM #Journal_TPA GROUP BY ISIN) t ON c.ISIN = t.ISIN
-LEFT JOIN (SELECT ISIN, SUM(ABS(AllocatedAmount)) AS TotalTPL FROM #Journal_TPL GROUP BY ISIN) p ON c.ISIN = p.ISIN;
+PRINT '';
+PRINT 'Total Cross Entity Amount: ' + CAST(@TotalCrossEntityAmount AS VARCHAR);
 
-SELECT 'TPA' AS JournalType, * FROM #Journal_TPA;
-SELECT 'TPL' AS JournalType, * FROM #Journal_TPL;
-SELECT * FROM #Validation;
+-- Process allocations from Level 11 down to Level 2
+WHILE @CurrentLevel >= 2
+BEGIN
+    PRINT '';
+    PRINT 'Processing Level ' + CAST(@CurrentLevel AS VARCHAR);
+    
+    -- Create temporary table for this level's potential matches
+    CREATE TABLE #LevelMatches (
+        TPARowID INT,
+        TPLRowID INT,
+        AllocatableAmount DECIMAL(20,2)
+    );
+    
+    -- Find all potential matches at current level
+    DECLARE @SQL NVARCHAR(MAX);
+    DECLARE @MatchCondition NVARCHAR(MAX) = '';
+    DECLARE @PathSelect NVARCHAR(MAX) = '';
+    
+    -- Build match condition for current level
+    DECLARE @Level INT = 2;
+    WHILE @Level <= @CurrentLevel
+    BEGIN
+        IF @Level > 2
+            SET @MatchCondition = @MatchCondition + ' AND ';
+        
+        SET @MatchCondition = @MatchCondition + 
+            'ISNULL(tpa.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''') = ISNULL(tpl.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''')';
+        
+        IF @Level > 2
+            SET @PathSelect = @PathSelect + ' + ''|'' + ';
+        SET @PathSelect = @PathSelect + 'ISNULL(tpa.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''')';
+        
+        SET @Level = @Level + 1;
+    END;
+    
+    -- Insert potential matches
+    SET @SQL = '
+    INSERT INTO #LevelMatches (TPARowID, TPLRowID, AllocatableAmount)
+    SELECT 
+        tpa.RowID,
+        tpl.RowID,
+        CASE 
+            WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
+            ELSE ABS(tpl.RemainingAmount)
+        END
+    FROM #WorkingData tpa
+    INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
+    WHERE tpa.Type = ''TPA'' 
+      AND tpl.Type = ''TPL''
+      AND tpa.RemainingAmount < 0
+      AND tpl.RemainingAmount > 0
+      AND tpa.IsAllocated = 0
+      AND tpl.IsAllocated = 0
+      AND ' + @MatchCondition;
+    
+    EXEC sp_executesql @SQL;
+    
+    -- Process matches one by one
+    DECLARE @TPARowID INT, @TPLRowID INT, @AllocatableAmount DECIMAL(20,2);
+    
+    DECLARE match_cursor CURSOR FOR 
+    SELECT TPARowID, TPLRowID, AllocatableAmount 
+    FROM #LevelMatches
+    ORDER BY AllocatableAmount DESC;
+    
+    OPEN match_cursor;
+    FETCH NEXT FROM match_cursor INTO @TPARowID, @TPLRowID, @AllocatableAmount;
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Get current remaining amounts
+        DECLARE @TPARemaining DECIMAL(20,2), @TPLRemaining DECIMAL(20,2);
+        SELECT @TPARemaining = RemainingAmount FROM #WorkingData WHERE RowID = @TPARowID;
+        SELECT @TPLRemaining = RemainingAmount FROM #WorkingData WHERE RowID = @TPLRowID;
+        
+        -- Only allocate if both still have remaining amounts
+        IF @TPARemaining < 0 AND @TPLRemaining > 0
+        BEGIN
+            -- Calculate actual allocation amount
+            DECLARE @ActualAllocation DECIMAL(20,2);
+            SET @ActualAllocation = CASE 
+                WHEN ABS(@TPARemaining) <= ABS(@TPLRemaining) THEN ABS(@TPARemaining)
+                ELSE ABS(@TPLRemaining)
+            END;
+            
+            -- Insert allocation record
+            SET @SQL = '
+            INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
+                                           TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount,
+                                           TPARemainingBefore, TPLRemainingBefore,
+                                           TPARemainingAfter, TPLRemainingAfter)
+            SELECT 
+                tpa.ISIN,
+                ' + CAST(@CurrentLevel AS VARCHAR) + ',
+                tpa.RowID,
+                tpl.RowID,
+                ' + @PathSelect + ',
+                tpa.OriginalAmount,
+                tpl.OriginalAmount,
+                ' + CAST(@ActualAllocation AS VARCHAR) + ',
+                ' + CAST(@TPARemaining AS VARCHAR) + ',
+                ' + CAST(@TPLRemaining AS VARCHAR) + ',
+                CASE WHEN ' + CAST(ABS(@TPARemaining) AS VARCHAR) + ' <= ' + CAST(@ActualAllocation AS VARCHAR) + ' THEN 0 
+                     ELSE ' + CAST(@TPARemaining AS VARCHAR) + ' + ' + CAST(@ActualAllocation AS VARCHAR) + ' END,
+                ' + CAST(@TPLRemaining AS VARCHAR) + ' - ' + CAST(@ActualAllocation AS VARCHAR) + '
+            FROM #WorkingData tpa
+            INNER JOIN #WorkingData tpl ON tpa.RowID = ' + CAST(@TPARowID AS VARCHAR) + ' AND tpl.RowID = ' + CAST(@TPLRowID AS VARCHAR);
+            
+            EXEC sp_executesql @SQL;
+            
+            -- Update remaining amounts
+            UPDATE #WorkingData 
+            SET RemainingAmount = CASE 
+                WHEN ABS(@TPARemaining) <= @ActualAllocation THEN 0 
+                ELSE @TPARemaining + @ActualAllocation 
+            END,
+            IsAllocated = CASE 
+                WHEN ABS(@TPARemaining) <= @ActualAllocation THEN 1 
+                ELSE 0 
+            END
+            WHERE RowID = @TPARowID;
+            
+            UPDATE #WorkingData 
+            SET RemainingAmount = @TPLRemaining - @ActualAllocation,
+                IsAllocated = CASE 
+                    WHEN @TPLRemaining - @ActualAllocation <= 0.01 THEN 1 
+                    ELSE 0 
+                END
+            WHERE RowID = @TPLRowID;
+        END
+        
+        FETCH NEXT FROM match_cursor INTO @TPARowID, @TPLRowID, @AllocatableAmount;
+    END
+    
+    CLOSE match_cursor;
+    DEALLOCATE match_cursor;
+    
+    -- Report allocations at this level
+    DECLARE @LevelAllocations INT;
+    SELECT @LevelAllocations = COUNT(*) FROM #AllocationResults WHERE AllocationLevel = @CurrentLevel;
+    PRINT 'Allocations at level ' + CAST(@CurrentLevel AS VARCHAR) + ': ' + CAST(@LevelAllocations AS VARCHAR);
+    
+    DROP TABLE #LevelMatches;
+    
+    SET @CurrentLevel = @CurrentLevel - 1;
+END;
 
-END
+-- Final Results
+PRINT '';
+PRINT '=== ALLOCATION RESULTS ===';
 
+-- Summary by level
+SELECT 
+    AllocationLevel,
+    COUNT(*) as NumAllocations,
+    SUM(AllocatedAmount) as TotalAllocated
+FROM #AllocationResults
+GROUP BY AllocationLevel
+ORDER BY AllocationLevel DESC;
+
+-- Detailed allocations
+SELECT 
+    ar.AllocationID,
+    ar.AllocationLevel,
+    ar.MatchPath,
+    ar.TPAOriginalAmount,
+    ar.TPLOriginalAmount,
+    ar.AllocatedAmount,
+    tpa.ProdLevel2 + ' > ' + ISNULL(tpa.ProdLevel3,'') + ' > ' + ISNULL(tpa.ProdLevel4,'') as TPAPath,
+    tpl.ProdLevel2 + ' > ' + ISNULL(tpl.ProdLevel3,'') + ' > ' + ISNULL(tpl.ProdLevel4,'') as TPLPath
+FROM #AllocationResults ar
+INNER JOIN #WorkingData tpa ON ar.TPARowID = tpa.RowID
+INNER JOIN #WorkingData tpl ON ar.TPLRowID = tpl.RowID
+ORDER BY ar.AllocationLevel DESC, ar.AllocationID;
+
+-- Remaining unallocated
+PRINT '';
+PRINT '=== REMAINING UNALLOCATED ===';
+SELECT 
+    Type,
+    ProdLevel2,
+    ProdLevel3,
+    ProdLevel4,
+    OriginalAmount,
+    RemainingAmount
+FROM #WorkingData
+WHERE RemainingAmount != 0
+ORDER BY Type, RowID;
+
+-- Cross Entity Summary
+SELECT 
+    cn.ISIN,
+    cn.GBPIFRSBalanceSheetAmount as TotalCrossEntityAmount,
+    ISNULL(SUM(ar.AllocatedAmount), 0) as TotalAllocated,
+    cn.GBPIFRSBalanceSheetAmount - ISNULL(SUM(ar.AllocatedAmount), 0) as RemainingUnallocated
+FROM #CrossNetting cn
+LEFT JOIN #AllocationResults ar ON cn.ISIN = ar.ISIN
+GROUP BY cn.ISIN, cn.GBPIFRSBalanceSheetAmount;
+
+-- CREATE FINAL JOURNAL ENTRIES
+PRINT '';
+PRINT '=== FINAL JOURNAL ENTRIES ===';
+
+-- Create Journal table
+CREATE TABLE #JournalEntries (
+    JournalID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    AllocationID INT,
+    EntryType VARCHAR(10),
+    AccountType VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    Amount DECIMAL(20,2),
+    Description VARCHAR(500)
+);
+
+-- Insert TPA entries (negative/credit side)
+INSERT INTO #JournalEntries (ISIN, AllocationID, EntryType, AccountType, 
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, 
+    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
+    Amount, Description)
+SELECT 
+    ar.ISIN,
+    ar.AllocationID,
+    'CREDIT' as EntryType,
+    'TPA' as AccountType,
+    tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, tpa.ProdLevel6,
+    tpa.ProdLevel7, tpa.ProdLevel8, tpa.ProdLevel9, tpa.ProdLevel10, tpa.ProdLevel11,
+    -ar.AllocatedAmount as Amount,  -- Negative for TPA
+    'Cross-entity netting allocation at Level ' + CAST(ar.AllocationLevel AS VARCHAR) + 
+    ' - TPA side for ' + ar.MatchPath
+FROM #AllocationResults ar
+INNER JOIN #WorkingData tpa ON ar.TPARowID = tpa.RowID;
+
+-- Insert TPL entries (positive/debit side)
+INSERT INTO #JournalEntries (ISIN, AllocationID, EntryType, AccountType, 
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, 
+    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
+    Amount, Description)
+SELECT 
+    ar.ISIN,
+    ar.AllocationID,
+    'DEBIT' as EntryType,
+    'TPL' as AccountType,
+    tpl.ProdLevel2, tpl.ProdLevel3, tpl.ProdLevel4, tpl.ProdLevel5, tpl.ProdLevel6,
+    tpl.ProdLevel7, tpl.ProdLevel8, tpl.ProdLevel9, tpl.ProdLevel10, tpl.ProdLevel11,
+    ar.AllocatedAmount as Amount,  -- Positive for TPL
+    'Cross-entity netting allocation at Level ' + CAST(ar.AllocationLevel AS VARCHAR) + 
+    ' - TPL side for ' + ar.MatchPath
+FROM #AllocationResults ar
+INNER JOIN #WorkingData tpl ON ar.TPLRowID = tpl.RowID;
+
+-- Display Journal Entries Summary
+PRINT '';
+PRINT 'Journal Summary by Account Type:';
+SELECT 
+    AccountType,
+    EntryType,
+    COUNT(*) as NumEntries,
+    SUM(Amount) as TotalAmount
+FROM #JournalEntries
+GROUP BY AccountType, EntryType
+ORDER BY AccountType, EntryType;
+
+-- Verify journal balance (should be zero)
+PRINT '';
+PRINT 'Journal Balance Check:';
+SELECT 
+    'Total Journal Balance' as Description,
+    SUM(Amount) as Balance,
+    CASE 
+        WHEN ABS(SUM(Amount)) < 0.01 THEN 'BALANCED' 
+        ELSE 'NOT BALANCED - CHECK ENTRIES!' 
+    END as Status
+FROM #JournalEntries;
+
+-- Display detailed journal entries
+PRINT '';
+PRINT 'Detailed Journal Entries:';
+SELECT 
+    JournalID,
+    AllocationID,
+    AccountType,
+    EntryType,
+    ProdLevel2 + ' > ' + ISNULL(ProdLevel3,'') + ' > ' + ISNULL(ProdLevel4,'') as HierarchyPath,
+    Amount,
+    Description
+FROM #JournalEntries
+ORDER BY AllocationID, AccountType DESC;  -- TPA first, then TPL
+
+-- Display journal entries paired by allocation
+PRINT '';
+PRINT 'Journal Entries Paired by Allocation:';
+SELECT 
+    j1.AllocationID,
+    'TPA' as Side1,
+    j1.Amount as TPAAmount,
+    j1.ProdLevel2 + ' > ' + ISNULL(j1.ProdLevel3,'') + ' > ' + ISNULL(j1.ProdLevel4,'') as TPAPath,
+    'TPL' as Side2,
+    j2.Amount as TPLAmount,
+    j2.ProdLevel2 + ' > ' + ISNULL(j2.ProdLevel3,'') + ' > ' + ISNULL(j2.ProdLevel4,'') as TPLPath,
+    j1.Amount + j2.Amount as NetAmount
+FROM #JournalEntries j1
+INNER JOIN #JournalEntries j2 ON j1.AllocationID = j2.AllocationID 
+    AND j1.AccountType = 'TPA' AND j2.AccountType = 'TPL'
+ORDER BY j1.AllocationID;
+
+-- Export-ready journal format
+PRINT '';
+PRINT 'Export-Ready Journal Format:';
+SELECT * FROM #CrossNetting
+SELECT * FROM #BusinessDetails
+
+SELECT 
+    JournalID,
+    ISIN,
+    AllocationID,
+    AccountType,
+    EntryType,
+    ProdLevel2,
+    ProdLevel3,
+    ProdLevel4,
+    ProdLevel5,
+    ProdLevel6,
+    ProdLevel7,
+    ProdLevel8,
+    ProdLevel9,
+    ProdLevel10,
+    ProdLevel11,
+    Amount,
+    GETDATE() as PostingDate,
+    'CROSS_ENTITY_NETTING' as JournalType,
+    Description
+FROM #JournalEntries
+
+ORDER BY AccountType DESC;
+
+DROP TABLE #JournalEntries;
+
+-- Clean up
+DROP TABLE #CrossNetting;
+DROP TABLE #BusinessDetails;
+DROP TABLE #WorkingData;
+DROP TABLE #AllocationResults;
