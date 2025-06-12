@@ -1,9 +1,47 @@
+-- Create temporary tables to store the data
+CREATE TABLE #CrossNetting (
+    ISIN VARCHAR(50),
+    GBPIFRSBalanceSheetAmount DECIMAL(20,2)
+);
 
-DROP TABLE if exists #WorkingData;
-DROP TABLE if exists #AllocationResults;
+CREATE TABLE #BusinessDetails (
+    ISIN VARCHAR(50),
+    Type VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    TotalAmount DECIMAL(20,2)
+);
 
--- Create a working table with row identifiers
-CREATE TABLE #WorkingData (
+-- Test data
+INSERT INTO #CrossNetting ([ISIN], [GBPIFRSBalanceSheetAmount])
+VALUES
+( 'DE0001135481', 28605.00 );
+
+INSERT INTO #BusinessDetails ([ISIN], [Type], [ProdLevel2], [ProdLevel3], [ProdLevel4], [ProdLevel5], [ProdLevel6], [ProdLevel7], [ProdLevel8], [ProdLevel9], [ProdLevel10], [ProdLevel11], [TotalAmount])
+VALUES
+( 'DE0001135481', 'TPA', 'Banking', 'Fixed Income Syndicate', 'Syndicate', 'Investment Grade', 'Investment Grade Bonds', 'EMEA IG Bonds', 'Corporates', 'Corporates', 'CP13905 - UK IG Corporate', NULL, -0.01 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Credit', 'FI Credit', 'Illiquid Credit', 'Global Illiquids Trading', 'Illiquids Flow', 'Illiquids - Credit', 'Illiquids - Credit', 'Bayram Massaoudi - Credit', NULL, -14794.39 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, -0.01 ),
+( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Structured Rates Trading', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives EUR Global Government', 'EUR Global Govt', NULL, -13810.72 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Giles Schepers', NULL, 0.00 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Ku Fatar', NULL, 25012745.06 ),
+( 'DE0001135481', 'TPL', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, 0.02 );
+
+-- Fix TPA amounts to ensure they are negative
+UPDATE #BusinessDetails 
+SET TotalAmount = -ABS(TotalAmount) 
+WHERE Type = 'TPA' AND TotalAmount > 0;
+
+-- STEP 1: Create aggregated hierarchy view
+CREATE TABLE #HierarchyAggregated (
     RowID INT IDENTITY(1,1),
     ISIN VARCHAR(50),
     Type VARCHAR(10),
@@ -17,584 +55,408 @@ CREATE TABLE #WorkingData (
     ProdLevel9 VARCHAR(100),
     ProdLevel10 VARCHAR(100),
     ProdLevel11 VARCHAR(100),
-    OriginalAmount DECIMAL(20,2),
-    RemainingAmount DECIMAL(20,2)
+    HierarchyPath VARCHAR(1000),
+    TotalAmount DECIMAL(20,2),
+    RemainingAmount DECIMAL(20,2),
+    RowCount INT
 );
 
--- Insert data into working table
-INSERT INTO #WorkingData (ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, OriginalAmount, RemainingAmount)
-SELECT ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, TotalAmount, TotalAmount
-FROM BusinessDetails;
+-- Aggregate by full hierarchy path
+INSERT INTO #HierarchyAggregated (ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, 
+    ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
+    HierarchyPath, TotalAmount, RemainingAmount, RowCount)
+SELECT 
+    ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, 
+    ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+    CONCAT(
+        ISNULL(ProdLevel2,''), '|', ISNULL(ProdLevel3,''), '|', 
+        ISNULL(ProdLevel4,''), '|', ISNULL(ProdLevel5,''), '|',
+        ISNULL(ProdLevel6,''), '|', ISNULL(ProdLevel7,''), '|',
+        ISNULL(ProdLevel8,''), '|', ISNULL(ProdLevel9,''), '|',
+        ISNULL(ProdLevel10,''), '|', ISNULL(ProdLevel11,'')
+    ) as HierarchyPath,
+    SUM(TotalAmount) as TotalAmount,
+    SUM(TotalAmount) as RemainingAmount,
+    COUNT(*) as RowCount
+FROM #BusinessDetails
+WHERE ABS(TotalAmount) > 0.001  -- Ignore zero amounts
+GROUP BY ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, 
+    ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11;
 
 -- Create allocation results table
 CREATE TABLE #AllocationResults (
     AllocationID INT IDENTITY(1,1),
     ISIN VARCHAR(50),
     AllocationLevel INT,
+    AllocationGroup INT,
     TPARowID INT,
     TPLRowID INT,
+    TPAHierarchyPath VARCHAR(1000),
+    TPLHierarchyPath VARCHAR(1000),
     MatchPath VARCHAR(1000),
     TPAOriginalAmount DECIMAL(20,2),
     TPLOriginalAmount DECIMAL(20,2),
-    AllocatedAmount DECIMAL(20,2),
-    TPARemainingAmount DECIMAL(20,2),
-    TPLRemainingAmount DECIMAL(20,2)
+    TPATotalInGroup DECIMAL(20,2),
+    TPLTotalInGroup DECIMAL(20,2),
+    GroupAllocationAmount DECIMAL(20,2),
+    TPAProRataFactor DECIMAL(20,6),
+    TPLProRataFactor DECIMAL(20,6),
+    AllocatedAmount DECIMAL(20,2)
 );
 
--- DEBUG: First, let's check potential matches at different levels
-PRINT '';
-PRINT 'Checking potential matches at each level:';
-
--- Check Level 7 matches (this is where EMEA Delta One Synthetics should match)
-PRINT '';
-PRINT 'Level 7 potential matches:';
-SELECT 
-    'Level7' as MatchLevel,
-    tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, 
-    tpa.ProdLevel6, tpa.ProdLevel7,
-    tpa.TotalAmount as TPAAmount,
-    tpl.TotalAmount as TPLAmount
-FROM BusinessDetails tpa
-INNER JOIN BusinessDetails tpl 
-    ON tpa.ISIN = tpl.ISIN
-    AND tpa.ProdLevel2 = tpl.ProdLevel2
-    AND tpa.ProdLevel3 = tpl.ProdLevel3
-    AND tpa.ProdLevel4 = tpl.ProdLevel4
-    AND tpa.ProdLevel5 = tpl.ProdLevel5
-    AND tpa.ProdLevel6 = tpl.ProdLevel6
-    AND tpa.ProdLevel7 = tpl.ProdLevel7
-WHERE tpa.Type = 'TPA' AND tpl.Type = 'TPL'
-    AND tpa.TotalAmount < 0 AND tpl.TotalAmount > 0;
+-- DEBUG: Show aggregated data
+PRINT 'Aggregated Hierarchy Data:';
+SELECT Type, ProdLevel2, ProdLevel3, ProdLevel4, TotalAmount, RowCount
+FROM #HierarchyAggregated
+ORDER BY Type, RowID;
 
 -- Variables for processing
 DECLARE @CurrentLevel INT = 11;
-DECLARE @TotalCrossEntityAmount DECIMAL(20,2);
-DECLARE @RemainingCrossEntityAmount DECIMAL(20,2);
-
-SELECT @TotalCrossEntityAmount = GBPIFRSBalanceSheetAmount,
-       @RemainingCrossEntityAmount = GBPIFRSBalanceSheetAmount
-FROM CrossNetting
-WHERE ISIN = 'US5949181045';
+DECLARE @AllocationGroup INT = 0;
 
 -- Process allocations from Level 11 down to Level 2
-WHILE @CurrentLevel >= 2 AND @RemainingCrossEntityAmount > 0
+WHILE @CurrentLevel >= 2
 BEGIN
     PRINT '';
     PRINT 'Processing Level ' + CAST(@CurrentLevel AS VARCHAR);
     
-    -- Simplified approach: direct insert based on level
-    IF @CurrentLevel = 11
-    BEGIN
-        -- Level 11: All levels must match (including NULLs)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
-                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,''), '|',
-                   ISNULL(tpa.ProdLevel10,''), '|', ISNULL(tpa.ProdLevel11,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
-            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
-            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
-            AND ISNULL(tpa.ProdLevel10,'') = ISNULL(tpl.ProdLevel10,'')
-            AND ISNULL(tpa.ProdLevel11,'') = ISNULL(tpl.ProdLevel11,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-    ELSE IF @CurrentLevel = 10
-    BEGIN
-        -- Level 10: Match levels 2-10, ignore level 11
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
-                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,''), '|',
-                   ISNULL(tpa.ProdLevel10,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
-            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
-            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
-            AND ISNULL(tpa.ProdLevel10,'') = ISNULL(tpl.ProdLevel10,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-    -- Continue for other levels...
-
-
-	ELSE IF @CurrentLevel = 9
-    BEGIN
-        -- Level 10: Match levels 2-10, ignore level 11
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
-                   ISNULL(tpa.ProdLevel8,''), '|', ISNULL(tpa.ProdLevel9,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
-            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
-            AND ISNULL(tpa.ProdLevel9,'') = ISNULL(tpl.ProdLevel9,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-    -- Continue for other levels...
-
-	
-
-	ELSE IF @CurrentLevel = 8
-    BEGIN
-        -- Level 10: Match levels 2-10, ignore level 11
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,''), '|',
-                   ISNULL(tpa.ProdLevel8,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
-            AND ISNULL(tpa.ProdLevel8,'') = ISNULL(tpl.ProdLevel8,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-    -- Continue for other levels...
-
-
-    ELSE IF @CurrentLevel = 7
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,''), '|', ISNULL(tpa.ProdLevel7,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-            AND ISNULL(tpa.ProdLevel7,'') = ISNULL(tpl.ProdLevel7,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-	
-    ELSE IF @CurrentLevel = 6
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,''), '|',
-                   ISNULL(tpa.ProdLevel6,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-            AND ISNULL(tpa.ProdLevel6,'') = ISNULL(tpl.ProdLevel6,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-	
-    ELSE IF @CurrentLevel = 5
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,''), '|', ISNULL(tpa.ProdLevel5,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-            AND ISNULL(tpa.ProdLevel5,'') = ISNULL(tpl.ProdLevel5,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-
-	
-    ELSE IF @CurrentLevel = 4
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,''), '|', 
-                   ISNULL(tpa.ProdLevel4,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-            AND ISNULL(tpa.ProdLevel4,'') = ISNULL(tpl.ProdLevel4,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-	
-	
-    ELSE IF @CurrentLevel = 3
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '|', ISNULL(tpa.ProdLevel3,'')) as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-            AND ISNULL(tpa.ProdLevel3,'') = ISNULL(tpl.ProdLevel3,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-	
-	
-    ELSE IF @CurrentLevel = 2
-    BEGIN
-        -- Level 7: Match levels 2-7 (this should catch EMEA Delta One Synthetics)
-        INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                       TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount, 
-                                       TPARemainingAmount, TPLRemainingAmount)
-        SELECT 
-            tpa.ISIN,
-            @CurrentLevel as AllocationLevel,
-            tpa.RowID as TPARowID,
-            tpl.RowID as TPLRowID,
-            CONCAT(ISNULL(tpa.ProdLevel2,''), '') as MatchPath,
-            tpa.OriginalAmount,
-            tpl.OriginalAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-                ELSE ABS(tpl.RemainingAmount)
-            END as AllocatedAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN 0
-                ELSE tpa.RemainingAmount + ABS(tpl.RemainingAmount)
-            END as TPARemainingAmount,
-            CASE 
-                WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN tpl.RemainingAmount - ABS(tpa.RemainingAmount)
-                ELSE 0
-            END as TPLRemainingAmount
-        FROM #WorkingData tpa
-        INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-            AND ISNULL(tpa.ProdLevel2,'') = ISNULL(tpl.ProdLevel2,'')
-        WHERE tpa.Type = 'TPA' 
-          AND tpl.Type = 'TPL'
-          AND tpa.RemainingAmount < 0
-          AND tpl.RemainingAmount > 0;
-    END
-
-
-    -- Add more level-specific logic as needed...
+    -- Create temporary table for level matches
+    CREATE TABLE #LevelMatches (
+        MatchID INT IDENTITY(1,1),
+        MatchPath VARCHAR(1000),
+        TPARowIDs VARCHAR(MAX),
+        TPLRowIDs VARCHAR(MAX),
+        TPATotalAmount DECIMAL(20,2),
+        TPLTotalAmount DECIMAL(20,2),
+        AllocationAmount DECIMAL(20,2)
+    );
     
-    -- Check if any allocations were made at this level
-    DECLARE @AllocationsAtLevel INT;
-    SELECT @AllocationsAtLevel = COUNT(*) 
+    -- Build dynamic SQL for matching at current level
+    DECLARE @SQL NVARCHAR(MAX);
+    DECLARE @MatchColumns VARCHAR(MAX) = '';
+    DECLARE @GroupByColumns VARCHAR(MAX) = '';
+    
+    -- Build column lists for current level
+    DECLARE @Level INT = 2;
+    WHILE @Level <= @CurrentLevel
+    BEGIN
+        IF @Level > 2
+        BEGIN
+            SET @MatchColumns = @MatchColumns + ', ';
+            SET @GroupByColumns = @GroupByColumns + ', ';
+        END
+        
+        SET @MatchColumns = @MatchColumns + 'ISNULL(ProdLevel' + CAST(@Level AS VARCHAR) + ', '''')';
+        SET @GroupByColumns = @GroupByColumns + 'ProdLevel' + CAST(@Level AS VARCHAR);
+        
+        SET @Level = @Level + 1;
+    END;
+    
+    -- Find groups of matches at current level
+    SET @SQL = '
+    WITH MatchGroups AS (
+        SELECT 
+            ' + @MatchColumns + ' as MatchPath,
+            ISIN
+        FROM #HierarchyAggregated
+        WHERE RemainingAmount != 0
+        GROUP BY ISIN, ' + @GroupByColumns + '
+        HAVING SUM(CASE WHEN Type = ''TPA'' AND RemainingAmount < 0 THEN 1 ELSE 0 END) > 0
+           AND SUM(CASE WHEN Type = ''TPL'' AND RemainingAmount > 0 THEN 1 ELSE 0 END) > 0
+    )
+    INSERT INTO #LevelMatches (MatchPath, TPARowIDs, TPLRowIDs, TPATotalAmount, TPLTotalAmount, AllocationAmount)
+    SELECT 
+        mg.MatchPath,
+        STUFF((SELECT '','' + CAST(RowID AS VARCHAR) 
+               FROM #HierarchyAggregated h
+               WHERE h.ISIN = mg.ISIN 
+                 AND h.Type = ''TPA''
+                 AND h.RemainingAmount < 0
+                 AND ' + @MatchColumns + ' = mg.MatchPath
+               FOR XML PATH('''')), 1, 1, '''') as TPARowIDs,
+        STUFF((SELECT '','' + CAST(RowID AS VARCHAR) 
+               FROM #HierarchyAggregated h
+               WHERE h.ISIN = mg.ISIN 
+                 AND h.Type = ''TPL''
+                 AND h.RemainingAmount > 0
+                 AND ' + @MatchColumns + ' = mg.MatchPath
+               FOR XML PATH('''')), 1, 1, '''') as TPLRowIDs,
+        (SELECT SUM(RemainingAmount) 
+         FROM #HierarchyAggregated h
+         WHERE h.ISIN = mg.ISIN 
+           AND h.Type = ''TPA''
+           AND h.RemainingAmount < 0
+           AND ' + @MatchColumns + ' = mg.MatchPath) as TPATotalAmount,
+        (SELECT SUM(RemainingAmount) 
+         FROM #HierarchyAggregated h
+         WHERE h.ISIN = mg.ISIN 
+           AND h.Type = ''TPL''
+           AND h.RemainingAmount > 0
+           AND ' + @MatchColumns + ' = mg.MatchPath) as TPLTotalAmount,
+        0 as AllocationAmount
+    FROM MatchGroups mg';
+    
+    EXEC sp_executesql @SQL;
+    
+    -- Calculate allocation amounts (minimum of absolute values)
+    UPDATE #LevelMatches
+    SET AllocationAmount = CASE 
+        WHEN ABS(TPATotalAmount) <= ABS(TPLTotalAmount) THEN ABS(TPATotalAmount)
+        ELSE ABS(TPLTotalAmount)
+    END;
+    
+    -- Process each match group
+    DECLARE @MatchID INT, @TPARowIDs VARCHAR(MAX), @TPLRowIDs VARCHAR(MAX), @AllocationAmount DECIMAL(20,2);
+    DECLARE @TPATotalAmount DECIMAL(20,2), @TPLTotalAmount DECIMAL(20,2), @MatchPath VARCHAR(1000);
+    
+    DECLARE match_cursor CURSOR FOR 
+    SELECT MatchID, MatchPath, TPARowIDs, TPLRowIDs, TPATotalAmount, TPLTotalAmount, AllocationAmount
+    FROM #LevelMatches
+    WHERE AllocationAmount > 0
+    ORDER BY AllocationAmount DESC;
+    
+    OPEN match_cursor;
+    FETCH NEXT FROM match_cursor INTO @MatchID, @MatchPath, @TPARowIDs, @TPLRowIDs, @TPATotalAmount, @TPLTotalAmount, @AllocationAmount;
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @AllocationGroup = @AllocationGroup + 1;
+        
+        -- Create allocation entries for all TPA x TPL combinations with pro-rata
+        DECLARE @TPARowID INT, @TPLRowID INT;
+        DECLARE @TPAAmount DECIMAL(20,2), @TPLAmount DECIMAL(20,2);
+        
+        -- Process each TPA row
+        DECLARE @TPAList TABLE (RowID INT);
+        INSERT INTO @TPAList (RowID)
+        SELECT value FROM STRING_SPLIT(@TPARowIDs, ',');
+        
+        -- Process each TPL row
+        DECLARE @TPLList TABLE (RowID INT);
+        INSERT INTO @TPLList (RowID)
+        SELECT value FROM STRING_SPLIT(@TPLRowIDs, ',');
+        
+        -- Insert pro-rata allocations
+        INSERT INTO #AllocationResults (
+            ISIN, AllocationLevel, AllocationGroup, TPARowID, TPLRowID,
+            TPAHierarchyPath, TPLHierarchyPath, MatchPath,
+            TPAOriginalAmount, TPLOriginalAmount,
+            TPATotalInGroup, TPLTotalInGroup,
+            GroupAllocationAmount,
+            TPAProRataFactor, TPLProRataFactor,
+            AllocatedAmount
+        )
+        SELECT 
+            tpa.ISIN,
+            @CurrentLevel,
+            @AllocationGroup,
+            tpa.RowID,
+            tpl.RowID,
+            tpa.HierarchyPath,
+            tpl.HierarchyPath,
+            @MatchPath,
+            tpa.TotalAmount,
+            tpl.TotalAmount,
+            @TPATotalAmount,
+            @TPLTotalAmount,
+            @AllocationAmount,
+            ABS(tpa.RemainingAmount) / ABS(@TPATotalAmount) as TPAProRataFactor,
+            ABS(tpl.RemainingAmount) / ABS(@TPLTotalAmount) as TPLProRataFactor,
+            @AllocationAmount * (ABS(tpa.RemainingAmount) / ABS(@TPATotalAmount)) * (ABS(tpl.RemainingAmount) / ABS(@TPLTotalAmount)) as AllocatedAmount
+        FROM #HierarchyAggregated tpa
+        CROSS JOIN #HierarchyAggregated tpl
+        WHERE tpa.RowID IN (SELECT RowID FROM @TPAList)
+          AND tpl.RowID IN (SELECT RowID FROM @TPLList);
+        
+        -- Update remaining amounts for TPA rows
+        UPDATE h
+        SET RemainingAmount = RemainingAmount + (@AllocationAmount * ABS(RemainingAmount) / ABS(@TPATotalAmount))
+        FROM #HierarchyAggregated h
+        WHERE h.RowID IN (SELECT RowID FROM @TPAList);
+        
+        -- Update remaining amounts for TPL rows
+        UPDATE h
+        SET RemainingAmount = RemainingAmount - (@AllocationAmount * ABS(RemainingAmount) / ABS(@TPLTotalAmount))
+        FROM #HierarchyAggregated h
+        WHERE h.RowID IN (SELECT RowID FROM @TPLList);
+        
+        -- Clear temp tables
+        DELETE FROM @TPAList;
+        DELETE FROM @TPLList;
+        
+        FETCH NEXT FROM match_cursor INTO @MatchID, @MatchPath, @TPARowIDs, @TPLRowIDs, @TPATotalAmount, @TPLTotalAmount, @AllocationAmount;
+    END
+    
+    CLOSE match_cursor;
+    DEALLOCATE match_cursor;
+    
+    -- Report allocations at this level
+    DECLARE @LevelAllocations INT, @LevelAmount DECIMAL(20,2);
+    SELECT @LevelAllocations = COUNT(DISTINCT AllocationGroup), 
+           @LevelAmount = SUM(GroupAllocationAmount) / COUNT(*)
     FROM #AllocationResults 
     WHERE AllocationLevel = @CurrentLevel;
     
-    PRINT 'Allocations made at level ' + CAST(@CurrentLevel AS VARCHAR) + ': ' + CAST(@AllocationsAtLevel AS VARCHAR);
+    PRINT 'Match groups at level ' + CAST(@CurrentLevel AS VARCHAR) + ': ' + CAST(ISNULL(@LevelAllocations, 0) AS VARCHAR) + 
+          ', Total allocated: ' + CAST(ISNULL(@LevelAmount, 0) AS VARCHAR);
     
-    -- Update remaining amounts in working table
-    UPDATE wd
-    SET RemainingAmount = ar.TPARemainingAmount
-    FROM #WorkingData wd
-    INNER JOIN #AllocationResults ar ON wd.RowID = ar.TPARowID
-    WHERE ar.AllocationLevel = @CurrentLevel;
+    DROP TABLE #LevelMatches;
     
-    UPDATE wd
-    SET RemainingAmount = ar.TPLRemainingAmount
-    FROM #WorkingData wd
-    INNER JOIN #AllocationResults ar ON wd.RowID = ar.TPLRowID
-    WHERE ar.AllocationLevel = @CurrentLevel;
-    
-    -- Update remaining cross entity amount
-    SELECT @RemainingCrossEntityAmount = @RemainingCrossEntityAmount - ISNULL(SUM(AllocatedAmount), 0)
-    FROM #AllocationResults
-    WHERE AllocationLevel = @CurrentLevel;
-    
-    -- Move to next level
     SET @CurrentLevel = @CurrentLevel - 1;
 END;
 
--- DEBUG: Check what's in allocation results
-PRINT '';
+-- Aggregate allocations by hierarchy path for journal entries
+CREATE TABLE #AggregatedAllocations (
+    ISIN VARCHAR(50),
+    Type VARCHAR(10),
+    HierarchyPath VARCHAR(1000),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    AllocatedAmount DECIMAL(20,2)
+);
 
--- Final Results Summary
+-- Aggregate TPA allocations
+INSERT INTO #AggregatedAllocations
 SELECT 
-    'Allocation Summary' as ReportType,
-    ISIN,
+    ar.ISIN,
+    'TPA' as Type,
+    ar.TPAHierarchyPath,
+    h.ProdLevel2, h.ProdLevel3, h.ProdLevel4, h.ProdLevel5, h.ProdLevel6,
+    h.ProdLevel7, h.ProdLevel8, h.ProdLevel9, h.ProdLevel10, h.ProdLevel11,
+    -SUM(ar.AllocatedAmount) as AllocatedAmount
+FROM #AllocationResults ar
+INNER JOIN #HierarchyAggregated h ON ar.TPARowID = h.RowID
+GROUP BY ar.ISIN, ar.TPAHierarchyPath, 
+    h.ProdLevel2, h.ProdLevel3, h.ProdLevel4, h.ProdLevel5, h.ProdLevel6,
+    h.ProdLevel7, h.ProdLevel8, h.ProdLevel9, h.ProdLevel10, h.ProdLevel11;
+
+-- Aggregate TPL allocations
+INSERT INTO #AggregatedAllocations
+SELECT 
+    ar.ISIN,
+    'TPL' as Type,
+    ar.TPLHierarchyPath,
+    h.ProdLevel2, h.ProdLevel3, h.ProdLevel4, h.ProdLevel5, h.ProdLevel6,
+    h.ProdLevel7, h.ProdLevel8, h.ProdLevel9, h.ProdLevel10, h.ProdLevel11,
+    SUM(ar.AllocatedAmount) as AllocatedAmount
+FROM #AllocationResults ar
+INNER JOIN #HierarchyAggregated h ON ar.TPLRowID = h.RowID
+GROUP BY ar.ISIN, ar.TPLHierarchyPath,
+    h.ProdLevel2, h.ProdLevel3, h.ProdLevel4, h.ProdLevel5, h.ProdLevel6,
+    h.ProdLevel7, h.ProdLevel8, h.ProdLevel9, h.ProdLevel10, h.ProdLevel11;
+
+-- Final Results
+PRINT '';
+PRINT '=== ALLOCATION RESULTS SUMMARY ===';
+
+-- Summary by level
+SELECT 
     AllocationLevel,
-    COUNT(*) as NumberOfAllocations,
-    SUM(AllocatedAmount) as TotalAllocated
+    COUNT(DISTINCT AllocationGroup) as NumMatchGroups,
+    SUM(GroupAllocationAmount) / COUNT(*) as TotalAllocated
 FROM #AllocationResults
-GROUP BY ISIN, AllocationLevel
+GROUP BY AllocationLevel
 ORDER BY AllocationLevel DESC;
 
--- Detailed Allocation Results
-SELECT 
-    ar.AllocationID,
-    ar.ISIN,
-    ar.AllocationLevel,
-    ar.MatchPath,
-    ar.TPAOriginalAmount,
-    ar.TPLOriginalAmount,
-    ar.AllocatedAmount,
-    ar.TPARemainingAmount,
-    ar.TPLRemainingAmount
-FROM #AllocationResults ar
-ORDER BY ar.AllocationLevel DESC, ar.AllocationID;
-
--- Show unallocated amounts
+-- CREATE FINAL JOURNAL ENTRIES
 PRINT '';
-PRINT 'Unallocated amounts:';
+PRINT '=== FINAL JOURNAL ENTRIES ===';
+
+-- Create Journal table
+CREATE TABLE #JournalEntries (
+    JournalID INT IDENTITY(1,1),
+    ISIN VARCHAR(50),
+    EntryType VARCHAR(10),
+    AccountType VARCHAR(10),
+    ProdLevel2 VARCHAR(100),
+    ProdLevel3 VARCHAR(100),
+    ProdLevel4 VARCHAR(100),
+    ProdLevel5 VARCHAR(100),
+    ProdLevel6 VARCHAR(100),
+    ProdLevel7 VARCHAR(100),
+    ProdLevel8 VARCHAR(100),
+    ProdLevel9 VARCHAR(100),
+    ProdLevel10 VARCHAR(100),
+    ProdLevel11 VARCHAR(100),
+    Amount DECIMAL(20,2),
+    Description VARCHAR(500)
+);
+
+-- Insert journal entries from aggregated allocations
+INSERT INTO #JournalEntries (ISIN, EntryType, AccountType, 
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, 
+    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
+    Amount, Description)
 SELECT 
-    Type,
-    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7,
-    OriginalAmount,
-    RemainingAmount
-FROM #WorkingData
-WHERE (Type = 'TPA' AND RemainingAmount < 0)
-   OR (Type = 'TPL' AND RemainingAmount > 0)
-ORDER BY Type, RowID;
+    ISIN,
+    CASE WHEN Type = 'TPA' THEN 'CREDIT' ELSE 'DEBIT' END as EntryType,
+    Type as AccountType,
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6,
+    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11,
+    AllocatedAmount as Amount,
+    'Cross-entity netting allocation for ' + 
+    ProdLevel2 + ' > ' + ISNULL(ProdLevel3,'') + ' > ' + ISNULL(ProdLevel4,'')
+FROM #AggregatedAllocations
+WHERE ABS(AllocatedAmount) > 0.001
+ORDER BY Type DESC, HierarchyPath;
+
+-- Display Journal Summary
+PRINT '';
+PRINT 'Journal Summary:';
+SELECT 
+    AccountType,
+    EntryType,
+    COUNT(*) as NumEntries,
+    SUM(Amount) as TotalAmount
+FROM #JournalEntries
+GROUP BY AccountType, EntryType
+ORDER BY AccountType, EntryType;
+
+-- Verify journal balance
+PRINT '';
+PRINT 'Journal Balance Check:';
+SELECT 
+    SUM(Amount) as TotalBalance,
+    CASE 
+        WHEN ABS(SUM(Amount)) < 0.01 THEN 'BALANCED ✓' 
+        ELSE 'NOT BALANCED - ERROR!' 
+    END as Status
+FROM #JournalEntries;
+
+-- Display detailed journal entries
+PRINT '';
+PRINT 'Detailed Journal Entries:';
+SELECT 
+    JournalID,
+    AccountType,
+    EntryType,
+    ProdLevel2 + ' > ' + ISNULL(ProdLevel3,'') + ' > ' + ISNULL(ProdLevel4,'') as HierarchyPath,
+    Amount
+FROM #JournalEntries
+ORDER BY JournalID;
 
 -- Cross Entity Summary
 SELECT 
     cn.ISIN,
     cn.GBPIFRSBalanceSheetAmount as TotalCrossEntityAmount,
-    ISNULL(SUM(ar.AllocatedAmount), 0) as TotalAllocated,
-    cn.GBPIFRSBalanceSheetAmount - ISNULL(SUM(ar.AllocatedAmount), 0) as RemainingUnallocated
-FROM CrossNetting cn
-LEFT JOIN #AllocationResults ar ON cn.ISIN = ar.ISIN
+    ABS(SUM(CASE WHEN je.AccountType = 'TPA' THEN je.Amount ELSE 0 END)) as TotalAllocated,
+    cn.GBPIFRSBalanceSheetAmount - ABS(SUM(CASE WHEN je.AccountType = 'TPA' THEN je.Amount ELSE 0 END)) as RemainingUnallocated
+FROM #CrossNetting cn
+LEFT JOIN #JournalEntries je ON cn.ISIN = je.ISIN
 GROUP BY cn.ISIN, cn.GBPIFRSBalanceSheetAmount;
 
-
-
+-- Clean up
+DROP TABLE #CrossNetting;
+DROP TABLE #BusinessDetails;
+DROP TABLE #HierarchyAggregated;
+DROP TABLE #AllocationResults;
+DROP TABLE #AggregatedAllocations;
+DROP TABLE #JournalEntries;
