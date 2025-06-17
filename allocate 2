@@ -12,9 +12,6 @@ CREATE TABLE CrossEntityNetting (
     CrossEntityNetting DECIMAL(20,4)
 );
 
-INSERT INTO CrossEntityNetting VALUES
-('US5949181045', 556945698.8538);
-
 -- Create and populate TPA Business Level table
 CREATE TABLE TPA_BusinessLevel (
     isin VARCHAR(20),
@@ -29,18 +26,6 @@ CREATE TABLE TPA_BusinessLevel (
     ProdLevel10 VARCHAR(50),
     GBPIFRSBalanceSheetAmount DECIMAL(20,4)
 );
-
-INSERT INTO TPA_BusinessLevel VALUES
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Americas', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000456', 4187.90),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000497', 329823.11),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000536', 447442.59),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017394', 13838111.91),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017396', 77482.50),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017397', 381479.12),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'CRB', 'N:CYNI2893-16848-93000359', 2905932.85),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:7MKB/2893-16848-93017693', 1872138.63),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:BCNI2893-16848-93000072', 9701683.53),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:SOFI8/2893-16848-93017491', 56311787.21);
 
 -- Create and populate TPL Business Level table
 CREATE TABLE TPL_BusinessLevel (
@@ -57,27 +42,35 @@ CREATE TABLE TPL_BusinessLevel (
     GBPIFRSBalanceSheetAmount DECIMAL(20,4)
 );
 
-INSERT INTO TPL_BusinessLevel VALUES
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Convertibles', 'Convertibles Americas', 'Convertibles US', 'Convertibles - Facilitation Americas', 'Convertibles - Facilitation Americas', 'SKF/2893-16191-93000113', -5655673.42),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Agency', 'US Portfolio - Agency', 'Portfolio Americas - Avg Price Acct', 'Facilitation/2893-16160-93011519', -319701.55),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000537', -554258.04),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000538', -172415.22),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017389', -146937.02),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017390', -183583.95),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017391', -31411.87),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017395', -476410.84),
-('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017397', -1085449.22),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'ETF US', 'ETF', 'Exchange Traded Funds', 'Flow Deriv ETFs/2893-16881-93018130', -971669.09),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'ETF US', 'ETF', 'Exchange Traded Funds', 'Flow Deriv ETFs/2893-16881-93018131', -3045540.49),
-('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Dispersion', 'N:1VOLB/2893-16880-93014714', -10988516.96);
+
+
+
+
+-- Test data
+INSERT INTO CrossEntityNetting ([ISIN], CrossEntityNetting)
+VALUES
+( 'DE0001135481', 28605.00 );
+
+INSERT INTO TPL_BusinessLevel ([ISIN], [ProdLevel2], [ProdLevel3], [ProdLevel4], [ProdLevel5], [ProdLevel6], [ProdLevel7], [ProdLevel8], [ProdLevel9], [ProdLevel10],  GBPIFRSBalanceSheetAmount)
+VALUES
+( 'DE0001135481', 'Banking', 'Fixed Income Syndicate', 'Syndicate', 'Investment Grade', 'Investment Grade Bonds', 'EMEA IG Bonds', 'Corporates', 'Corporates', 'CP13905 - UK IG Corporate',  -0.01 ),
+( 'DE0001135481', 'Markets', 'Credit', 'FI Credit', 'Illiquid Credit', 'Global Illiquids Trading', 'Illiquids Flow', 'Illiquids - Credit', 'Illiquids - Credit', 'Bayram Massaoudi - Credit',  -14794.39 ),
+( 'DE0001135481', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC',  -0.01 ),
+( 'DE0001135481', 'Markets', 'Macro', 'Rates', 'Structured Rates Trading', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives EUR Global Government', 'EUR Global Govt',  -13810.72 )
+
+INSERT INTO TPA_BusinessLevel ([ISIN], [ProdLevel2], [ProdLevel3], [ProdLevel4], [ProdLevel5], [ProdLevel6], [ProdLevel7], [ProdLevel8], [ProdLevel9], [ProdLevel10],  GBPIFRSBalanceSheetAmount)
+VALUES
+( 'DE0001135481', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Giles Schepers',  0.00 ),
+( 'DE0001135481', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Ku Fatar',  25012745.06 ),
+( 'DE0001135481', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC',  0.02 );
+
 
 
 SELECT 'TPA',* FROM dbo.TPA_BusinessLevel
 --UNION ALL 
 SELECT 'TPL',* FROM dbo.TPL_BusinessLevel
-
--- Cross-Entity Allocation - Original Rows with Accumulated 
-
+-- Cross-Entity Allocation - Original Rows with Accumulated Allocation
+-- Output: Original 10 TPA rows + 12 TPL rows with allocated_amount column
 -- Cross-Entity Allocation - Original Rows with Accumulated Allocation
 -- Output: Original 10 TPA rows + 12 TPL rows with allocated_amount column
 
@@ -156,7 +149,7 @@ Level10_WithProration AS (
         CASE 
             WHEN SUM(lm.min_allocation) OVER (PARTITION BY lm.isin) > 0 THEN
                 CASE 
-                    WHEN ra.remaining_amount * (lm.min_allocation / SUM(lm.min_allocation) OVER (PARTITION BY lm.isin)) < lm.min_allocation
+                    WHEN ra.remaining_amount < SUM(lm.min_allocation) OVER (PARTITION BY lm.isin)
                     THEN ra.remaining_amount * (lm.min_allocation / SUM(lm.min_allocation) OVER (PARTITION BY lm.isin))
                     ELSE lm.min_allocation
                 END
@@ -243,7 +236,7 @@ Level9_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                 END
@@ -252,7 +245,7 @@ Level9_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                 END
@@ -346,7 +339,7 @@ Level8_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                 END
@@ -355,7 +348,7 @@ Level8_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                 END
@@ -421,7 +414,7 @@ Level7_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                 END
@@ -430,7 +423,7 @@ Level7_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                 END
@@ -494,7 +487,7 @@ Level6_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
                 END
@@ -503,7 +496,7 @@ Level6_Distribution AS (
         CASE 
             WHEN lwp.total_min_at_level > 0 THEN
                 CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    WHEN lwp.remaining_amount < lwp.total_min_at_level
                     THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                     ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
                 END
@@ -736,7 +729,7 @@ UPDATE l SET allocated_amount = l.allocated_amount + l3.tpl_share FROM #TPL_Jour
 UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level3_Allocations);
 DROP TABLE #Level3_Allocations;
 
--- ==================== LEVEL 2 ALLOCATION ====================
+-- ==================== LEVEL 2 ALLOCATION (FINAL - ALLOCATE ALL REMAINING) ====================
 CREATE TABLE #Level2_Allocations (
     isin VARCHAR(20),
     ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
@@ -746,61 +739,83 @@ CREATE TABLE #Level2_Allocations (
     tpl_share DECIMAL(20,4)
 );
 
-WITH Level2_Aggregated AS (
+-- At Level 2, split the FULL remaining amount between TPA and TPL based on their capacity
+WITH Level2_Totals AS (
     SELECT 
-        t.isin, t.ProdLevel2,
-        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
-        SUM(ABS(l.original_amount)) as TPL_Abs_Total
-    FROM #TPA_Journal t
-    JOIN #TPL_Journal l ON t.isin = l.isin 
-        AND t.ProdLevel2 = l.ProdLevel2
-    GROUP BY t.isin, t.ProdLevel2
-    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+        ra.isin,
+        SUM(ABS(t.original_amount)) as Total_TPA_Abs,
+        SUM(ABS(l.original_amount)) as Total_TPL_Abs,
+        ra.remaining_amount
+    FROM #RemainingAmount ra
+    CROSS JOIN #TPA_Journal t
+    CROSS JOIN #TPL_Journal l
+    WHERE t.isin = ra.isin AND l.isin = ra.isin
+    GROUP BY ra.isin, ra.remaining_amount
 ),
-Level2_WithProration AS (
-    SELECT 
-        la.*,
-        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
-        ra.remaining_amount,
-        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
-    FROM Level2_Aggregated la
-    JOIN #RemainingAmount ra ON la.isin = ra.isin
+Level2_Splits AS (
+    SELECT *,
+        -- Split remaining amount based on relative capacity (TPA vs TPL)
+        remaining_amount * (Total_TPA_Abs / (Total_TPA_Abs + Total_TPL_Abs)) as TPA_Total_Allocation,
+        remaining_amount * (Total_TPL_Abs / (Total_TPA_Abs + Total_TPL_Abs)) as TPL_Total_Allocation
+    FROM Level2_Totals
 ),
 Level2_Distribution AS (
     SELECT 
         t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        -- TPA gets its proportional share of the TPA allocation
         CASE 
-            WHEN lwp.total_min_at_level > 0 THEN
-                CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
-                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
-                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
-                END
+            WHEN ls.Total_TPA_Abs > 0 THEN 
+                ls.TPA_Total_Allocation * (ABS(t.original_amount) / ls.Total_TPA_Abs)
             ELSE 0
         END as tpa_share,
+        0 as tpl_share
+    FROM #TPA_Journal t
+    JOIN Level2_Splits ls ON t.isin = ls.isin
+
+    UNION ALL
+
+    SELECT 
+        l.isin, l.ProdLevel2, l.ProdLevel3, l.ProdLevel4, l.ProdLevel5, l.ProdLevel6, l.ProdLevel7, l.ProdLevel8, l.ProdLevel9, l.ProdLevel10,
+        0 as tpa_share,
+        -- TPL gets its proportional share of the TPL allocation
         CASE 
-            WHEN lwp.total_min_at_level > 0 THEN
-                CASE 
-                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
-                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
-                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
-                END
+            WHEN ls.Total_TPL_Abs > 0 THEN 
+                ls.TPL_Total_Allocation * (ABS(l.original_amount) / ls.Total_TPL_Abs)
             ELSE 0
         END as tpl_share
-    FROM #TPA_Journal t
-    JOIN #TPL_Journal l ON t.isin = l.isin 
-        AND t.ProdLevel2 = l.ProdLevel2
-    JOIN Level2_WithProration lwp ON t.isin = lwp.isin 
-        AND t.ProdLevel2 = lwp.ProdLevel2
+    FROM #TPL_Journal l  
+    JOIN Level2_Splits ls ON l.isin = ls.isin
 )
 INSERT INTO #Level2_Allocations
-SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
-FROM Level2_Distribution 
-WHERE tpa_share > 0 OR tpl_share > 0;
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, 
+       ISNULL(tpa_share, 0), ISNULL(tpl_share, 0)
+FROM Level2_Distribution;
 
-UPDATE t SET allocated_amount = t.allocated_amount + l2.tpa_share FROM #TPA_Journal t JOIN #Level2_Allocations l2 ON t.isin = l2.isin AND t.ProdLevel2 = l2.ProdLevel2 AND t.ProdLevel3 = l2.ProdLevel3 AND t.ProdLevel4 = l2.ProdLevel4 AND t.ProdLevel5 = l2.ProdLevel5 AND t.ProdLevel6 = l2.ProdLevel6 AND t.ProdLevel7 = l2.ProdLevel7 AND t.ProdLevel8 = l2.ProdLevel8 AND t.ProdLevel9 = l2.ProdLevel9 AND t.ProdLevel10 = l2.ProdLevel10;
-UPDATE l SET allocated_amount = l.allocated_amount + l2.tpl_share FROM #TPL_Journal l JOIN #Level2_Allocations l2 ON l.isin = l2.isin AND l.ProdLevel2 = l2.ProdLevel2 AND l.ProdLevel3 = l2.ProdLevel3 AND l.ProdLevel4 = l2.ProdLevel4 AND l.ProdLevel5 = l2.ProdLevel5 AND l.ProdLevel6 = l2.ProdLevel6 AND l.ProdLevel7 = l2.ProdLevel7 AND l.ProdLevel8 = l2.ProdLevel8 AND l.ProdLevel9 = l2.ProdLevel9 AND l.ProdLevel10 = l2.ProdLevel10;
-UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level2_Allocations);
+-- Update TPA Journal - only update rows where tpa_share > 0
+UPDATE t 
+SET allocated_amount = t.allocated_amount + l2.tpa_share 
+FROM #TPA_Journal t 
+JOIN #Level2_Allocations l2 ON t.isin = l2.isin 
+    AND t.ProdLevel2 = l2.ProdLevel2 AND t.ProdLevel3 = l2.ProdLevel3 
+    AND t.ProdLevel4 = l2.ProdLevel4 AND t.ProdLevel5 = l2.ProdLevel5 
+    AND t.ProdLevel6 = l2.ProdLevel6 AND t.ProdLevel7 = l2.ProdLevel7 
+    AND t.ProdLevel8 = l2.ProdLevel8 AND t.ProdLevel9 = l2.ProdLevel9 
+    AND t.ProdLevel10 = l2.ProdLevel10
+WHERE l2.tpa_share > 0;
+
+-- Update TPL Journal - only update rows where tpl_share > 0
+UPDATE l 
+SET allocated_amount = l.allocated_amount + l2.tpl_share 
+FROM #TPL_Journal l 
+JOIN #Level2_Allocations l2 ON l.isin = l2.isin 
+    AND l.ProdLevel2 = l2.ProdLevel2 AND l.ProdLevel3 = l2.ProdLevel3 
+    AND l.ProdLevel4 = l2.ProdLevel4 AND l.ProdLevel5 = l2.ProdLevel5 
+    AND l.ProdLevel6 = l2.ProdLevel6 AND l.ProdLevel7 = l2.ProdLevel7 
+    AND l.ProdLevel8 = l2.ProdLevel8 AND l.ProdLevel9 = l2.ProdLevel9 
+    AND l.ProdLevel10 = l2.ProdLevel10
+WHERE l2.tpl_share > 0;
+
+UPDATE #RemainingAmount SET remaining_amount = 0;  -- All remaining amount is now allocated
 DROP TABLE #Level2_Allocations;
 
 -- ==================== FINAL RESULTS ====================
