@@ -1,458 +1,846 @@
--- Create temporary tables to store the data
-CREATE TABLE #CrossNetting (
-    ISIN VARCHAR(50),
-    GBPIFRSBalanceSheetAmount DECIMAL(20,2)
+-- Cross-Entity Allocation with Proration Logic
+-- When multiple rows exist at a level, prorate the allocation
+
+-- Drop and recreate tables with sample data
+DROP TABLE IF EXISTS CrossEntityNetting;
+DROP TABLE IF EXISTS TPA_BusinessLevel;
+DROP TABLE IF EXISTS TPL_BusinessLevel;
+
+-- Create and populate CrossEntityNetting table
+CREATE TABLE CrossEntityNetting (
+    isin VARCHAR(20),
+    CrossEntityNetting DECIMAL(20,4)
 );
 
-CREATE TABLE #BusinessDetails (
-    ISIN VARCHAR(50),
-    Type VARCHAR(10),
-    ProdLevel2 VARCHAR(100),
-    ProdLevel3 VARCHAR(100),
-    ProdLevel4 VARCHAR(100),
-    ProdLevel5 VARCHAR(100),
-    ProdLevel6 VARCHAR(100),
-    ProdLevel7 VARCHAR(100),
-    ProdLevel8 VARCHAR(100),
-    ProdLevel9 VARCHAR(100),
-    ProdLevel10 VARCHAR(100),
-    ProdLevel11 VARCHAR(100),
-    TotalAmount DECIMAL(20,2)
+INSERT INTO CrossEntityNetting VALUES
+('US5949181045', 556945698.8538);
+
+-- Create and populate TPA Business Level table
+CREATE TABLE TPA_BusinessLevel (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50),
+    ProdLevel3 VARCHAR(50),
+    ProdLevel4 VARCHAR(50),
+    ProdLevel5 VARCHAR(50),
+    ProdLevel6 VARCHAR(50),
+    ProdLevel7 VARCHAR(50),
+    ProdLevel8 VARCHAR(50),
+    ProdLevel9 VARCHAR(50),
+    ProdLevel10 VARCHAR(50),
+    GBPIFRSBalanceSheetAmount DECIMAL(20,4)
 );
 
--- Test data
-INSERT INTO #CrossNetting ([ISIN], [GBPIFRSBalanceSheetAmount])
-VALUES
-( 'DE0001135481', 28605.00 );
+INSERT INTO TPA_BusinessLevel VALUES
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Americas', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000456', 4187.90),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000497', 329823.11),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000536', 447442.59),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017394', 13838111.91),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017396', 77482.50),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017397', 381479.12),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'CRB', 'N:CYNI2893-16848-93000359', 2905932.85),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:7MKB/2893-16848-93017693', 1872138.63),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:BCNI2893-16848-93000072', 9701683.53),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Stocks', 'N:SOFI8/2893-16848-93017491', 56311787.21);
 
-INSERT INTO #BusinessDetails ([ISIN], [Type], [ProdLevel2], [ProdLevel3], [ProdLevel4], [ProdLevel5], [ProdLevel6], [ProdLevel7], [ProdLevel8], [ProdLevel9], [ProdLevel10], [ProdLevel11], [TotalAmount])
-VALUES
-( 'DE0001135481', 'TPA', 'Banking', 'Fixed Income Syndicate', 'Syndicate', 'Investment Grade', 'Investment Grade Bonds', 'EMEA IG Bonds', 'Corporates', 'Corporates', 'CP13905 - UK IG Corporate', NULL, -0.01 ),
-( 'DE0001135481', 'TPA', 'Markets', 'Credit', 'FI Credit', 'Illiquid Credit', 'Global Illiquids Trading', 'Illiquids Flow', 'Illiquids - Credit', 'Illiquids - Credit', 'Bayram Massaoudi - Credit', NULL, -14794.39 ),
-( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, -0.01 ),
-( 'DE0001135481', 'TPA', 'Markets', 'Macro', 'Rates', 'Structured Rates Trading', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives', 'Index Derivatives EUR Global Government', 'EUR Global Govt', NULL, -13810.72 ),
-( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Giles Schepers', NULL, 0.00 ),
-( 'DE0001135481', 'TPL', 'Markets', 'Credit', 'FI Credit', 'Flow Credit EMEA', 'HG EMEA', 'EU HG', 'EU HG Alpha Gen', 'EU HG - Corp Cash', 'Ku Fatar', NULL, 25012745.06 ),
-( 'DE0001135481', 'TPL', 'Markets', 'Macro', 'Rates', 'Flow Rates EMEA', 'Rates Flow EMEA', 'EUR Government Bonds', 'EUR Government Bonds_PLC', 'EUR Government Bonds_PLC_Management', 'EGB Management Costs PLC', NULL, 0.02 );
-
--- Create a working table with row identifiers
-CREATE TABLE #WorkingData (
-    RowID INT IDENTITY(1,1),
-    ISIN VARCHAR(50),
-    Type VARCHAR(10),
-    ProdLevel2 VARCHAR(100),
-    ProdLevel3 VARCHAR(100),
-    ProdLevel4 VARCHAR(100),
-    ProdLevel5 VARCHAR(100),
-    ProdLevel6 VARCHAR(100),
-    ProdLevel7 VARCHAR(100),
-    ProdLevel8 VARCHAR(100),
-    ProdLevel9 VARCHAR(100),
-    ProdLevel10 VARCHAR(100),
-    ProdLevel11 VARCHAR(100),
-    OriginalAmount DECIMAL(20,2),
-    RemainingAmount DECIMAL(20,2),
-    IsAllocated BIT DEFAULT 0
+-- Create and populate TPL Business Level table
+CREATE TABLE TPL_BusinessLevel (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50),
+    ProdLevel3 VARCHAR(50),
+    ProdLevel4 VARCHAR(50),
+    ProdLevel5 VARCHAR(50),
+    ProdLevel6 VARCHAR(50),
+    ProdLevel7 VARCHAR(50),
+    ProdLevel8 VARCHAR(50),
+    ProdLevel9 VARCHAR(50),
+    ProdLevel10 VARCHAR(50),
+    GBPIFRSBalanceSheetAmount DECIMAL(20,4)
 );
 
--- Insert data into working table - IMPORTANT: Ensure TPA amounts are negative
-INSERT INTO #WorkingData (ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, OriginalAmount, RemainingAmount)
-SELECT 
-    ISIN, Type, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
-    CASE 
-        WHEN Type = 'TPA' AND TotalAmount > 0 THEN -TotalAmount  -- Ensure TPA is negative
-        ELSE TotalAmount
-    END,
-    CASE 
-        WHEN Type = 'TPA' AND TotalAmount > 0 THEN -TotalAmount  -- Ensure TPA is negative
-        ELSE TotalAmount
-    END
-FROM #BusinessDetails;
+INSERT INTO TPL_BusinessLevel VALUES
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Convertibles', 'Convertibles Americas', 'Convertibles US', 'Convertibles - Facilitation Americas', 'Convertibles - Facilitation Americas', 'SKF/2893-16191-93000113', -5655673.42),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Agency', 'US Portfolio - Agency', 'Portfolio Americas - Avg Price Acct', 'Facilitation/2893-16160-93011519', -319701.55),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000537', -554258.04),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93000538', -172415.22),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017389', -146937.02),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017390', -183583.95),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017391', -31411.87),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017395', -476410.84),
+('US5949181045', 'Markets', 'Equities', 'Cash Equities', 'EQ Portfolio', 'Portfolio Americas', 'Risk', 'US Portfolio - Rebalances', 'Sector Trading', 'Inventory Hedge/2893-17419-93017397', -1085449.22),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'ETF US', 'ETF', 'Exchange Traded Funds', 'Flow Deriv ETFs/2893-16881-93018130', -971669.09),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'ETF US', 'ETF', 'Exchange Traded Funds', 'Flow Deriv ETFs/2893-16881-93018131', -3045540.49),
+('US5949181045', 'Markets', 'Equities', 'Equity Derivatives', 'EQ Row Derivatives', 'Row Derivatives Americas', 'Row Derivatives - Americas', 'Stocks', 'Dispersion', 'N:1VOLB/2893-16880-93014714', -10988516.96);
 
--- Create allocation results table
-CREATE TABLE #AllocationResults (
-    AllocationID INT IDENTITY(1,1),
-    ISIN VARCHAR(50),
-    AllocationLevel INT,
-    TPARowID INT,
-    TPLRowID INT,
-    MatchPath VARCHAR(1000),
-    TPAOriginalAmount DECIMAL(20,2),
-    TPLOriginalAmount DECIMAL(20,2),
-    AllocatedAmount DECIMAL(20,2),
-    TPARemainingBefore DECIMAL(20,2),
-    TPLRemainingBefore DECIMAL(20,2),
-    TPARemainingAfter DECIMAL(20,2),
-    TPLRemainingAfter DECIMAL(20,2)
+
+SELECT 'TPA',* FROM dbo.TPA_BusinessLevel
+--UNION ALL 
+SELECT 'TPL',* FROM dbo.TPL_BusinessLevel
+
+-- Cross-Entity Allocation - Original Rows with Accumulated 
+
+-- Cross-Entity Allocation - Original Rows with Accumulated Allocation
+-- Output: Original 10 TPA rows + 12 TPL rows with allocated_amount column
+
+-- Create working tables
+CREATE TABLE #RemainingAmount (
+    isin VARCHAR(20),
+    remaining_amount DECIMAL(20,4)
 );
 
--- DEBUG: Show starting data
-PRINT 'Starting data:';
-SELECT Type, ProdLevel2, ProdLevel3, ProdLevel4, OriginalAmount, RemainingAmount
-FROM #WorkingData
-ORDER BY Type, RowID;
+INSERT INTO #RemainingAmount 
+SELECT isin, CrossEntityNetting FROM CrossEntityNetting;
 
--- Variables for processing
-DECLARE @CurrentLevel INT = 11;
-DECLARE @TotalCrossEntityAmount DECIMAL(20,2);
-DECLARE @RemainingCrossEntityAmount DECIMAL(20,2);
+-- Create TPA Journal starting with original rows
+CREATE TABLE #TPA_Journal (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    original_amount DECIMAL(20,4),
+    allocated_amount DECIMAL(20,4) DEFAULT 0
+);
 
-SELECT @TotalCrossEntityAmount = GBPIFRSBalanceSheetAmount,
-       @RemainingCrossEntityAmount = GBPIFRSBalanceSheetAmount
-FROM #CrossNetting;
+-- Create TPL Journal starting with original rows
+CREATE TABLE #TPL_Journal (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    original_amount DECIMAL(20,4),
+    allocated_amount DECIMAL(20,4) DEFAULT 0
+);
 
-PRINT '';
-PRINT 'Total Cross Entity Amount: ' + CAST(@TotalCrossEntityAmount AS VARCHAR);
+-- Insert original TPA rows
+INSERT INTO #TPA_Journal (isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, original_amount)
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, GBPIFRSBalanceSheetAmount
+FROM TPA_BusinessLevel;
 
--- Process allocations from Level 11 down to Level 2
-WHILE @CurrentLevel >= 2
-BEGIN
-    PRINT '';
-    PRINT 'Processing Level ' + CAST(@CurrentLevel AS VARCHAR);
-    
-    -- Create temporary table for this level's potential matches
-    CREATE TABLE #LevelMatches (
-        TPARowID INT,
-        TPLRowID INT,
-        AllocatableAmount DECIMAL(20,2)
-    );
-    
-    -- Find all potential matches at current level
-    DECLARE @SQL NVARCHAR(MAX);
-    DECLARE @MatchCondition NVARCHAR(MAX) = '';
-    DECLARE @PathSelect NVARCHAR(MAX) = '';
-    
-    -- Build match condition for current level
-    DECLARE @Level INT = 2;
-    WHILE @Level <= @CurrentLevel
-    BEGIN
-        IF @Level > 2
-            SET @MatchCondition = @MatchCondition + ' AND ';
-        
-        SET @MatchCondition = @MatchCondition + 
-            'ISNULL(tpa.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''') = ISNULL(tpl.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''')';
-        
-        IF @Level > 2
-            SET @PathSelect = @PathSelect + ' + ''|'' + ';
-        SET @PathSelect = @PathSelect + 'ISNULL(tpa.ProdLevel' + CAST(@Level AS VARCHAR) + ', '''')';
-        
-        SET @Level = @Level + 1;
-    END;
-    
-    -- Insert potential matches
-    SET @SQL = '
-    INSERT INTO #LevelMatches (TPARowID, TPLRowID, AllocatableAmount)
+-- Insert original TPL rows
+INSERT INTO #TPL_Journal (isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, original_amount)
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, GBPIFRSBalanceSheetAmount
+FROM TPL_BusinessLevel;
+
+-- ==================== LEVEL 10 ALLOCATION ====================
+-- Create temp table for Level 10 allocations
+CREATE TABLE #Level10_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    allocated_amount DECIMAL(20,4)
+);
+
+-- Find exact matches at Level 10 and calculate allocations
+WITH Level10_Matches AS (
     SELECT 
-        tpa.RowID,
-        tpl.RowID,
+        t.isin,
+        t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6,
+        t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        ABS(t.original_amount) as TPA_Abs,
+        ABS(l.original_amount) as TPL_Abs,
+        CASE WHEN ABS(t.original_amount) < ABS(l.original_amount) THEN ABS(t.original_amount) ELSE ABS(l.original_amount) END as min_allocation
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7 
+        AND t.ProdLevel8 = l.ProdLevel8 AND t.ProdLevel9 = l.ProdLevel9 
+        AND t.ProdLevel10 = l.ProdLevel10
+    WHERE ABS(t.original_amount) > 0 AND ABS(l.original_amount) > 0
+),
+Level10_WithProration AS (
+    SELECT 
+        lm.*,
+        ra.remaining_amount,
+        SUM(lm.min_allocation) OVER (PARTITION BY lm.isin) as total_min_at_level,
         CASE 
-            WHEN ABS(tpa.RemainingAmount) <= ABS(tpl.RemainingAmount) THEN ABS(tpa.RemainingAmount)
-            ELSE ABS(tpl.RemainingAmount)
-        END
-    FROM #WorkingData tpa
-    INNER JOIN #WorkingData tpl ON tpa.ISIN = tpl.ISIN
-    WHERE tpa.Type = ''TPA'' 
-      AND tpl.Type = ''TPL''
-      AND tpa.RemainingAmount < 0
-      AND tpl.RemainingAmount > 0
-      AND tpa.IsAllocated = 0
-      AND tpl.IsAllocated = 0
-      AND ' + @MatchCondition;
-    
-    EXEC sp_executesql @SQL;
-    
-    -- Process matches one by one
-    DECLARE @TPARowID INT, @TPLRowID INT, @AllocatableAmount DECIMAL(20,2);
-    
-    DECLARE match_cursor CURSOR FOR 
-    SELECT TPARowID, TPLRowID, AllocatableAmount 
-    FROM #LevelMatches
-    ORDER BY AllocatableAmount DESC;
-    
-    OPEN match_cursor;
-    FETCH NEXT FROM match_cursor INTO @TPARowID, @TPLRowID, @AllocatableAmount;
-    
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        -- Get current remaining amounts
-        DECLARE @TPARemaining DECIMAL(20,2), @TPLRemaining DECIMAL(20,2);
-        SELECT @TPARemaining = RemainingAmount FROM #WorkingData WHERE RowID = @TPARowID;
-        SELECT @TPLRemaining = RemainingAmount FROM #WorkingData WHERE RowID = @TPLRowID;
-        
-        -- Only allocate if both still have remaining amounts
-        IF @TPARemaining < 0 AND @TPLRemaining > 0
-        BEGIN
-            -- Calculate actual allocation amount
-            DECLARE @ActualAllocation DECIMAL(20,2);
-            SET @ActualAllocation = CASE 
-                WHEN ABS(@TPARemaining) <= ABS(@TPLRemaining) THEN ABS(@TPARemaining)
-                ELSE ABS(@TPLRemaining)
-            END;
-            
-            -- Insert allocation record
-            SET @SQL = '
-            INSERT INTO #AllocationResults (ISIN, AllocationLevel, TPARowID, TPLRowID, MatchPath, 
-                                           TPAOriginalAmount, TPLOriginalAmount, AllocatedAmount,
-                                           TPARemainingBefore, TPLRemainingBefore,
-                                           TPARemainingAfter, TPLRemainingAfter)
-            SELECT 
-                tpa.ISIN,
-                ' + CAST(@CurrentLevel AS VARCHAR) + ',
-                tpa.RowID,
-                tpl.RowID,
-                ' + @PathSelect + ',
-                tpa.OriginalAmount,
-                tpl.OriginalAmount,
-                ' + CAST(@ActualAllocation AS VARCHAR) + ',
-                ' + CAST(@TPARemaining AS VARCHAR) + ',
-                ' + CAST(@TPLRemaining AS VARCHAR) + ',
-                CASE WHEN ' + CAST(ABS(@TPARemaining) AS VARCHAR) + ' <= ' + CAST(@ActualAllocation AS VARCHAR) + ' THEN 0 
-                     ELSE ' + CAST(@TPARemaining AS VARCHAR) + ' + ' + CAST(@ActualAllocation AS VARCHAR) + ' END,
-                ' + CAST(@TPLRemaining AS VARCHAR) + ' - ' + CAST(@ActualAllocation AS VARCHAR) + '
-            FROM #WorkingData tpa
-            INNER JOIN #WorkingData tpl ON tpa.RowID = ' + CAST(@TPARowID AS VARCHAR) + ' AND tpl.RowID = ' + CAST(@TPLRowID AS VARCHAR);
-            
-            EXEC sp_executesql @SQL;
-            
-            -- Update remaining amounts
-            UPDATE #WorkingData 
-            SET RemainingAmount = CASE 
-                WHEN ABS(@TPARemaining) <= @ActualAllocation THEN 0 
-                ELSE @TPARemaining + @ActualAllocation 
-            END,
-            IsAllocated = CASE 
-                WHEN ABS(@TPARemaining) <= @ActualAllocation THEN 1 
-                ELSE 0 
-            END
-            WHERE RowID = @TPARowID;
-            
-            UPDATE #WorkingData 
-            SET RemainingAmount = @TPLRemaining - @ActualAllocation,
-                IsAllocated = CASE 
-                    WHEN @TPLRemaining - @ActualAllocation <= 0.01 THEN 1 
-                    ELSE 0 
+            WHEN SUM(lm.min_allocation) OVER (PARTITION BY lm.isin) > 0 THEN
+                CASE 
+                    WHEN ra.remaining_amount * (lm.min_allocation / SUM(lm.min_allocation) OVER (PARTITION BY lm.isin)) < lm.min_allocation
+                    THEN ra.remaining_amount * (lm.min_allocation / SUM(lm.min_allocation) OVER (PARTITION BY lm.isin))
+                    ELSE lm.min_allocation
                 END
-            WHERE RowID = @TPLRowID;
-        END
-        
-        FETCH NEXT FROM match_cursor INTO @TPARowID, @TPLRowID, @AllocatableAmount;
-    END
-    
-    CLOSE match_cursor;
-    DEALLOCATE match_cursor;
-    
-    -- Report allocations at this level
-    DECLARE @LevelAllocations INT;
-    SELECT @LevelAllocations = COUNT(*) FROM #AllocationResults WHERE AllocationLevel = @CurrentLevel;
-    PRINT 'Allocations at level ' + CAST(@CurrentLevel AS VARCHAR) + ': ' + CAST(@LevelAllocations AS VARCHAR);
-    
-    DROP TABLE #LevelMatches;
-    
-    SET @CurrentLevel = @CurrentLevel - 1;
-END;
+            ELSE 0
+        END as allocated_amount
+    FROM Level10_Matches lm
+    JOIN #RemainingAmount ra ON lm.isin = ra.isin
+)
+-- Insert Level 10 allocations into temp table
+INSERT INTO #Level10_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, allocated_amount
+FROM Level10_WithProration 
+WHERE allocated_amount > 0;
 
--- Final Results
-PRINT '';
-PRINT '=== ALLOCATION RESULTS ===';
+-- Update TPA Journal with Level 10 allocations
+UPDATE t
+SET allocated_amount = t.allocated_amount + l10.allocated_amount
+FROM #TPA_Journal t
+JOIN #Level10_Allocations l10 ON t.isin = l10.isin 
+    AND t.ProdLevel2 = l10.ProdLevel2 AND t.ProdLevel3 = l10.ProdLevel3 
+    AND t.ProdLevel4 = l10.ProdLevel4 AND t.ProdLevel5 = l10.ProdLevel5 
+    AND t.ProdLevel6 = l10.ProdLevel6 AND t.ProdLevel7 = l10.ProdLevel7 
+    AND t.ProdLevel8 = l10.ProdLevel8 AND t.ProdLevel9 = l10.ProdLevel9 
+    AND t.ProdLevel10 = l10.ProdLevel10;
 
--- Summary by level
-SELECT 
-    AllocationLevel,
-    COUNT(*) as NumAllocations,
-    SUM(AllocatedAmount) as TotalAllocated
-FROM #AllocationResults
-GROUP BY AllocationLevel
-ORDER BY AllocationLevel DESC;
+-- Update TPL Journal with Level 10 allocations
+UPDATE l
+SET allocated_amount = l.allocated_amount + l10.allocated_amount
+FROM #TPL_Journal l
+JOIN #Level10_Allocations l10 ON l.isin = l10.isin 
+    AND l.ProdLevel2 = l10.ProdLevel2 AND l.ProdLevel3 = l10.ProdLevel3 
+    AND l.ProdLevel4 = l10.ProdLevel4 AND l.ProdLevel5 = l10.ProdLevel5 
+    AND l.ProdLevel6 = l10.ProdLevel6 AND l.ProdLevel7 = l10.ProdLevel7 
+    AND l.ProdLevel8 = l10.ProdLevel8 AND l.ProdLevel9 = l10.ProdLevel9 
+    AND l.ProdLevel10 = l10.ProdLevel10;
 
--- Detailed allocations
-SELECT 
-    ar.AllocationID,
-    ar.AllocationLevel,
-    ar.MatchPath,
-    ar.TPAOriginalAmount,
-    ar.TPLOriginalAmount,
-    ar.AllocatedAmount,
-    tpa.ProdLevel2 + ' > ' + ISNULL(tpa.ProdLevel3,'') + ' > ' + ISNULL(tpa.ProdLevel4,'') as TPAPath,
-    tpl.ProdLevel2 + ' > ' + ISNULL(tpl.ProdLevel3,'') + ' > ' + ISNULL(tpl.ProdLevel4,'') as TPLPath
-FROM #AllocationResults ar
-INNER JOIN #WorkingData tpa ON ar.TPARowID = tpa.RowID
-INNER JOIN #WorkingData tpl ON ar.TPLRowID = tpl.RowID
-ORDER BY ar.AllocationLevel DESC, ar.AllocationID;
-
--- Remaining unallocated
-PRINT '';
-PRINT '=== REMAINING UNALLOCATED ===';
-SELECT 
-    Type,
-    ProdLevel2,
-    ProdLevel3,
-    ProdLevel4,
-    OriginalAmount,
-    RemainingAmount
-FROM #WorkingData
-WHERE RemainingAmount != 0
-ORDER BY Type, RowID;
-
--- Cross Entity Summary
-SELECT 
-    cn.ISIN,
-    cn.GBPIFRSBalanceSheetAmount as TotalCrossEntityAmount,
-    ISNULL(SUM(ar.AllocatedAmount), 0) as TotalAllocated,
-    cn.GBPIFRSBalanceSheetAmount - ISNULL(SUM(ar.AllocatedAmount), 0) as RemainingUnallocated
-FROM #CrossNetting cn
-LEFT JOIN #AllocationResults ar ON cn.ISIN = ar.ISIN
-GROUP BY cn.ISIN, cn.GBPIFRSBalanceSheetAmount;
-
--- CREATE FINAL JOURNAL ENTRIES
-PRINT '';
-PRINT '=== FINAL JOURNAL ENTRIES ===';
-
--- Create Journal table
-CREATE TABLE #JournalEntries (
-    JournalID INT IDENTITY(1,1),
-    ISIN VARCHAR(50),
-    AllocationID INT,
-    EntryType VARCHAR(10),
-    AccountType VARCHAR(10),
-    ProdLevel2 VARCHAR(100),
-    ProdLevel3 VARCHAR(100),
-    ProdLevel4 VARCHAR(100),
-    ProdLevel5 VARCHAR(100),
-    ProdLevel6 VARCHAR(100),
-    ProdLevel7 VARCHAR(100),
-    ProdLevel8 VARCHAR(100),
-    ProdLevel9 VARCHAR(100),
-    ProdLevel10 VARCHAR(100),
-    ProdLevel11 VARCHAR(100),
-    Amount DECIMAL(20,2),
-    Description VARCHAR(500)
+-- Update remaining amount after Level 10
+UPDATE #RemainingAmount 
+SET remaining_amount = remaining_amount - (
+    SELECT ISNULL(SUM(allocated_amount), 0)
+    FROM #Level10_Allocations
 );
 
--- Insert TPA entries (negative/credit side)
-INSERT INTO #JournalEntries (ISIN, AllocationID, EntryType, AccountType, 
-    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, 
-    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
-    Amount, Description)
+DROP TABLE #Level10_Allocations;
+
+-- ==================== LEVEL 9 ALLOCATION ====================
+-- Create temp table for Level 9 allocations
+CREATE TABLE #Level9_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+-- Find matches at Level 9 (aggregate by ProdLevel2-9)
+WITH Level9_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7 
+        AND t.ProdLevel8 = l.ProdLevel8 AND t.ProdLevel9 = l.ProdLevel9
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level9_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level9_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level9_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7 
+        AND t.ProdLevel8 = l.ProdLevel8 AND t.ProdLevel9 = l.ProdLevel9
+    JOIN Level9_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4 AND t.ProdLevel5 = lwp.ProdLevel5 
+        AND t.ProdLevel6 = lwp.ProdLevel6 AND t.ProdLevel7 = lwp.ProdLevel7 
+        AND t.ProdLevel8 = lwp.ProdLevel8 AND t.ProdLevel9 = lwp.ProdLevel9
+)
+-- Insert Level 9 allocations into temp table
+INSERT INTO #Level9_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level9_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+-- Update TPA Journal with Level 9 allocations
+UPDATE t
+SET allocated_amount = t.allocated_amount + l9.tpa_share
+FROM #TPA_Journal t
+JOIN #Level9_Allocations l9 ON t.isin = l9.isin 
+    AND t.ProdLevel2 = l9.ProdLevel2 AND t.ProdLevel3 = l9.ProdLevel3 
+    AND t.ProdLevel4 = l9.ProdLevel4 AND t.ProdLevel5 = l9.ProdLevel5 
+    AND t.ProdLevel6 = l9.ProdLevel6 AND t.ProdLevel7 = l9.ProdLevel7 
+    AND t.ProdLevel8 = l9.ProdLevel8 AND t.ProdLevel9 = l9.ProdLevel9 
+    AND t.ProdLevel10 = l9.ProdLevel10;
+
+-- Update TPL Journal with Level 9 allocations
+UPDATE l
+SET allocated_amount = l.allocated_amount + l9.tpl_share
+FROM #TPL_Journal l
+JOIN #Level9_Allocations l9 ON l.isin = l9.isin 
+    AND l.ProdLevel2 = l9.ProdLevel2 AND l.ProdLevel3 = l9.ProdLevel3 
+    AND l.ProdLevel4 = l9.ProdLevel4 AND l.ProdLevel5 = l9.ProdLevel5 
+    AND l.ProdLevel6 = l9.ProdLevel6 AND l.ProdLevel7 = l9.ProdLevel7 
+    AND l.ProdLevel8 = l9.ProdLevel8 AND l.ProdLevel9 = l9.ProdLevel9 
+    AND l.ProdLevel10 = l9.ProdLevel10;
+
+-- Update remaining amount after Level 9
+UPDATE #RemainingAmount 
+SET remaining_amount = remaining_amount - (
+    SELECT ISNULL(SUM(tpa_share), 0)
+    FROM #Level9_Allocations
+);
+
+DROP TABLE #Level9_Allocations;
+
+-- ==================== LEVEL 8 ALLOCATION ====================
+CREATE TABLE #Level8_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level8_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7 
+        AND t.ProdLevel8 = l.ProdLevel8
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level8_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level8_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level8_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7 
+        AND t.ProdLevel8 = l.ProdLevel8
+    JOIN Level8_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4 AND t.ProdLevel5 = lwp.ProdLevel5 
+        AND t.ProdLevel6 = lwp.ProdLevel6 AND t.ProdLevel7 = lwp.ProdLevel7 
+        AND t.ProdLevel8 = lwp.ProdLevel8
+)
+INSERT INTO #Level8_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level8_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l8.tpa_share FROM #TPA_Journal t JOIN #Level8_Allocations l8 ON t.isin = l8.isin AND t.ProdLevel2 = l8.ProdLevel2 AND t.ProdLevel3 = l8.ProdLevel3 AND t.ProdLevel4 = l8.ProdLevel4 AND t.ProdLevel5 = l8.ProdLevel5 AND t.ProdLevel6 = l8.ProdLevel6 AND t.ProdLevel7 = l8.ProdLevel7 AND t.ProdLevel8 = l8.ProdLevel8 AND t.ProdLevel9 = l8.ProdLevel9 AND t.ProdLevel10 = l8.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l8.tpl_share FROM #TPL_Journal l JOIN #Level8_Allocations l8 ON l.isin = l8.isin AND l.ProdLevel2 = l8.ProdLevel2 AND l.ProdLevel3 = l8.ProdLevel3 AND l.ProdLevel4 = l8.ProdLevel4 AND l.ProdLevel5 = l8.ProdLevel5 AND l.ProdLevel6 = l8.ProdLevel6 AND l.ProdLevel7 = l8.ProdLevel7 AND l.ProdLevel8 = l8.ProdLevel8 AND l.ProdLevel9 = l8.ProdLevel9 AND l.ProdLevel10 = l8.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level8_Allocations);
+DROP TABLE #Level8_Allocations;
+
+-- ==================== LEVEL 7 ALLOCATION ====================
+CREATE TABLE #Level7_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level7_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level7_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level7_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level7_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6 AND t.ProdLevel7 = l.ProdLevel7
+    JOIN Level7_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4 AND t.ProdLevel5 = lwp.ProdLevel5 
+        AND t.ProdLevel6 = lwp.ProdLevel6 AND t.ProdLevel7 = lwp.ProdLevel7
+)
+INSERT INTO #Level7_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level7_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l7.tpa_share FROM #TPA_Journal t JOIN #Level7_Allocations l7 ON t.isin = l7.isin AND t.ProdLevel2 = l7.ProdLevel2 AND t.ProdLevel3 = l7.ProdLevel3 AND t.ProdLevel4 = l7.ProdLevel4 AND t.ProdLevel5 = l7.ProdLevel5 AND t.ProdLevel6 = l7.ProdLevel6 AND t.ProdLevel7 = l7.ProdLevel7 AND t.ProdLevel8 = l7.ProdLevel8 AND t.ProdLevel9 = l7.ProdLevel9 AND t.ProdLevel10 = l7.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l7.tpl_share FROM #TPL_Journal l JOIN #Level7_Allocations l7 ON l.isin = l7.isin AND l.ProdLevel2 = l7.ProdLevel2 AND l.ProdLevel3 = l7.ProdLevel3 AND l.ProdLevel4 = l7.ProdLevel4 AND l.ProdLevel5 = l7.ProdLevel5 AND l.ProdLevel6 = l7.ProdLevel6 AND l.ProdLevel7 = l7.ProdLevel7 AND l.ProdLevel8 = l7.ProdLevel8 AND l.ProdLevel9 = l7.ProdLevel9 AND l.ProdLevel10 = l7.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level7_Allocations);
+DROP TABLE #Level7_Allocations;
+
+-- ==================== LEVEL 6 ALLOCATION ====================
+CREATE TABLE #Level6_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level6_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level6_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level6_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level6_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5 
+        AND t.ProdLevel6 = l.ProdLevel6
+    JOIN Level6_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4 AND t.ProdLevel5 = lwp.ProdLevel5 
+        AND t.ProdLevel6 = lwp.ProdLevel6
+)
+INSERT INTO #Level6_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level6_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l6.tpa_share FROM #TPA_Journal t JOIN #Level6_Allocations l6 ON t.isin = l6.isin AND t.ProdLevel2 = l6.ProdLevel2 AND t.ProdLevel3 = l6.ProdLevel3 AND t.ProdLevel4 = l6.ProdLevel4 AND t.ProdLevel5 = l6.ProdLevel5 AND t.ProdLevel6 = l6.ProdLevel6 AND t.ProdLevel7 = l6.ProdLevel7 AND t.ProdLevel8 = l6.ProdLevel8 AND t.ProdLevel9 = l6.ProdLevel9 AND t.ProdLevel10 = l6.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l6.tpl_share FROM #TPL_Journal l JOIN #Level6_Allocations l6 ON l.isin = l6.isin AND l.ProdLevel2 = l6.ProdLevel2 AND l.ProdLevel3 = l6.ProdLevel3 AND l.ProdLevel4 = l6.ProdLevel4 AND l.ProdLevel5 = l6.ProdLevel5 AND l.ProdLevel6 = l6.ProdLevel6 AND l.ProdLevel7 = l6.ProdLevel7 AND l.ProdLevel8 = l6.ProdLevel8 AND l.ProdLevel9 = l6.ProdLevel9 AND l.ProdLevel10 = l6.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level6_Allocations);
+DROP TABLE #Level6_Allocations;
+
+-- ==================== LEVEL 5 ALLOCATION ====================
+CREATE TABLE #Level5_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level5_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level5_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level5_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level5_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4 AND t.ProdLevel5 = l.ProdLevel5
+    JOIN Level5_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4 AND t.ProdLevel5 = lwp.ProdLevel5
+)
+INSERT INTO #Level5_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level5_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l5.tpa_share FROM #TPA_Journal t JOIN #Level5_Allocations l5 ON t.isin = l5.isin AND t.ProdLevel2 = l5.ProdLevel2 AND t.ProdLevel3 = l5.ProdLevel3 AND t.ProdLevel4 = l5.ProdLevel4 AND t.ProdLevel5 = l5.ProdLevel5 AND t.ProdLevel6 = l5.ProdLevel6 AND t.ProdLevel7 = l5.ProdLevel7 AND t.ProdLevel8 = l5.ProdLevel8 AND t.ProdLevel9 = l5.ProdLevel9 AND t.ProdLevel10 = l5.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l5.tpl_share FROM #TPL_Journal l JOIN #Level5_Allocations l5 ON l.isin = l5.isin AND l.ProdLevel2 = l5.ProdLevel2 AND l.ProdLevel3 = l5.ProdLevel3 AND l.ProdLevel4 = l5.ProdLevel4 AND l.ProdLevel5 = l5.ProdLevel5 AND l.ProdLevel6 = l5.ProdLevel6 AND l.ProdLevel7 = l5.ProdLevel7 AND l.ProdLevel8 = l5.ProdLevel8 AND l.ProdLevel9 = l5.ProdLevel9 AND l.ProdLevel10 = l5.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level5_Allocations);
+DROP TABLE #Level5_Allocations;
+
+-- ==================== LEVEL 4 ALLOCATION ====================
+CREATE TABLE #Level4_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level4_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level4_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level4_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level4_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3 
+        AND t.ProdLevel4 = l.ProdLevel4
+    JOIN Level4_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3 
+        AND t.ProdLevel4 = lwp.ProdLevel4
+)
+INSERT INTO #Level4_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level4_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l4.tpa_share FROM #TPA_Journal t JOIN #Level4_Allocations l4 ON t.isin = l4.isin AND t.ProdLevel2 = l4.ProdLevel2 AND t.ProdLevel3 = l4.ProdLevel3 AND t.ProdLevel4 = l4.ProdLevel4 AND t.ProdLevel5 = l4.ProdLevel5 AND t.ProdLevel6 = l4.ProdLevel6 AND t.ProdLevel7 = l4.ProdLevel7 AND t.ProdLevel8 = l4.ProdLevel8 AND t.ProdLevel9 = l4.ProdLevel9 AND t.ProdLevel10 = l4.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l4.tpl_share FROM #TPL_Journal l JOIN #Level4_Allocations l4 ON l.isin = l4.isin AND l.ProdLevel2 = l4.ProdLevel2 AND l.ProdLevel3 = l4.ProdLevel3 AND l.ProdLevel4 = l4.ProdLevel4 AND l.ProdLevel5 = l4.ProdLevel5 AND l.ProdLevel6 = l4.ProdLevel6 AND l.ProdLevel7 = l4.ProdLevel7 AND l.ProdLevel8 = l4.ProdLevel8 AND l.ProdLevel9 = l4.ProdLevel9 AND l.ProdLevel10 = l4.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level4_Allocations);
+DROP TABLE #Level4_Allocations;
+
+-- ==================== LEVEL 3 ALLOCATION ====================
+CREATE TABLE #Level3_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level3_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3
+    GROUP BY t.isin, t.ProdLevel2, t.ProdLevel3
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level3_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level3_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level3_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2 AND t.ProdLevel3 = l.ProdLevel3
+    JOIN Level3_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2 AND t.ProdLevel3 = lwp.ProdLevel3
+)
+INSERT INTO #Level3_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level3_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l3.tpa_share FROM #TPA_Journal t JOIN #Level3_Allocations l3 ON t.isin = l3.isin AND t.ProdLevel2 = l3.ProdLevel2 AND t.ProdLevel3 = l3.ProdLevel3 AND t.ProdLevel4 = l3.ProdLevel4 AND t.ProdLevel5 = l3.ProdLevel5 AND t.ProdLevel6 = l3.ProdLevel6 AND t.ProdLevel7 = l3.ProdLevel7 AND t.ProdLevel8 = l3.ProdLevel8 AND t.ProdLevel9 = l3.ProdLevel9 AND t.ProdLevel10 = l3.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l3.tpl_share FROM #TPL_Journal l JOIN #Level3_Allocations l3 ON l.isin = l3.isin AND l.ProdLevel2 = l3.ProdLevel2 AND l.ProdLevel3 = l3.ProdLevel3 AND l.ProdLevel4 = l3.ProdLevel4 AND l.ProdLevel5 = l3.ProdLevel5 AND l.ProdLevel6 = l3.ProdLevel6 AND l.ProdLevel7 = l3.ProdLevel7 AND l.ProdLevel8 = l3.ProdLevel8 AND l.ProdLevel9 = l3.ProdLevel9 AND l.ProdLevel10 = l3.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level3_Allocations);
+DROP TABLE #Level3_Allocations;
+
+-- ==================== LEVEL 2 ALLOCATION ====================
+CREATE TABLE #Level2_Allocations (
+    isin VARCHAR(20),
+    ProdLevel2 VARCHAR(50), ProdLevel3 VARCHAR(50), ProdLevel4 VARCHAR(50), 
+    ProdLevel5 VARCHAR(50), ProdLevel6 VARCHAR(50), ProdLevel7 VARCHAR(50), 
+    ProdLevel8 VARCHAR(50), ProdLevel9 VARCHAR(50), ProdLevel10 VARCHAR(50),
+    tpa_share DECIMAL(20,4),
+    tpl_share DECIMAL(20,4)
+);
+
+WITH Level2_Aggregated AS (
+    SELECT 
+        t.isin, t.ProdLevel2,
+        SUM(ABS(t.original_amount)) as TPA_Abs_Total,
+        SUM(ABS(l.original_amount)) as TPL_Abs_Total
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2
+    GROUP BY t.isin, t.ProdLevel2
+    HAVING SUM(ABS(t.original_amount)) > 0 AND SUM(ABS(l.original_amount)) > 0
+),
+Level2_WithProration AS (
+    SELECT 
+        la.*,
+        CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END as min_allocation,
+        ra.remaining_amount,
+        SUM(CASE WHEN la.TPA_Abs_Total < la.TPL_Abs_Total THEN la.TPA_Abs_Total ELSE la.TPL_Abs_Total END) OVER (PARTITION BY la.isin) as total_min_at_level
+    FROM Level2_Aggregated la
+    JOIN #RemainingAmount ra ON la.isin = ra.isin
+),
+Level2_Distribution AS (
+    SELECT 
+        t.isin, t.ProdLevel2, t.ProdLevel3, t.ProdLevel4, t.ProdLevel5, t.ProdLevel6, t.ProdLevel7, t.ProdLevel8, t.ProdLevel9, t.ProdLevel10,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(t.original_amount) / lwp.TPA_Abs_Total)
+                END
+            ELSE 0
+        END as tpa_share,
+        CASE 
+            WHEN lwp.total_min_at_level > 0 THEN
+                CASE 
+                    WHEN lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level) < lwp.min_allocation
+                    THEN (lwp.remaining_amount * (lwp.min_allocation / lwp.total_min_at_level)) * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                    ELSE lwp.min_allocation * (ABS(l.original_amount) / lwp.TPL_Abs_Total)
+                END
+            ELSE 0
+        END as tpl_share
+    FROM #TPA_Journal t
+    JOIN #TPL_Journal l ON t.isin = l.isin 
+        AND t.ProdLevel2 = l.ProdLevel2
+    JOIN Level2_WithProration lwp ON t.isin = lwp.isin 
+        AND t.ProdLevel2 = lwp.ProdLevel2
+)
+INSERT INTO #Level2_Allocations
+SELECT isin, ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, tpa_share, tpl_share
+FROM Level2_Distribution 
+WHERE tpa_share > 0 OR tpl_share > 0;
+
+UPDATE t SET allocated_amount = t.allocated_amount + l2.tpa_share FROM #TPA_Journal t JOIN #Level2_Allocations l2 ON t.isin = l2.isin AND t.ProdLevel2 = l2.ProdLevel2 AND t.ProdLevel3 = l2.ProdLevel3 AND t.ProdLevel4 = l2.ProdLevel4 AND t.ProdLevel5 = l2.ProdLevel5 AND t.ProdLevel6 = l2.ProdLevel6 AND t.ProdLevel7 = l2.ProdLevel7 AND t.ProdLevel8 = l2.ProdLevel8 AND t.ProdLevel9 = l2.ProdLevel9 AND t.ProdLevel10 = l2.ProdLevel10;
+UPDATE l SET allocated_amount = l.allocated_amount + l2.tpl_share FROM #TPL_Journal l JOIN #Level2_Allocations l2 ON l.isin = l2.isin AND l.ProdLevel2 = l2.ProdLevel2 AND l.ProdLevel3 = l2.ProdLevel3 AND l.ProdLevel4 = l2.ProdLevel4 AND l.ProdLevel5 = l2.ProdLevel5 AND l.ProdLevel6 = l2.ProdLevel6 AND l.ProdLevel7 = l2.ProdLevel7 AND l.ProdLevel8 = l2.ProdLevel8 AND l.ProdLevel9 = l2.ProdLevel9 AND l.ProdLevel10 = l2.ProdLevel10;
+UPDATE #RemainingAmount SET remaining_amount = remaining_amount - (SELECT ISNULL(SUM(tpa_share), 0) FROM #Level2_Allocations);
+DROP TABLE #Level2_Allocations;
+
+-- ==================== FINAL RESULTS ====================
+
+-- TPA Journal (Original 10 rows with allocated amounts)
 SELECT 
-    ar.ISIN,
-    ar.AllocationID,
-    'CREDIT' as EntryType,
-    'TPA' as AccountType,
-    tpa.ProdLevel2, tpa.ProdLevel3, tpa.ProdLevel4, tpa.ProdLevel5, tpa.ProdLevel6,
-    tpa.ProdLevel7, tpa.ProdLevel8, tpa.ProdLevel9, tpa.ProdLevel10, tpa.ProdLevel11,
-    -ar.AllocatedAmount as Amount,  -- Negative for TPA
-    'Cross-entity netting allocation at Level ' + CAST(ar.AllocationLevel AS VARCHAR) + 
-    ' - TPA side for ' + ar.MatchPath
-FROM #AllocationResults ar
-INNER JOIN #WorkingData tpa ON ar.TPARowID = tpa.RowID;
+    'TPA_JOURNAL' as journal_type,
+    ROW_NUMBER() OVER (ORDER BY ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10) as row_id,
+    isin,
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10,
+    original_amount,
+    allocated_amount,
+    CASE WHEN original_amount >= 0 THEN allocated_amount ELSE -allocated_amount END as journal_amount
+FROM #TPA_Journal
+ORDER BY ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10;
 
--- Insert TPL entries (positive/debit side)
-INSERT INTO #JournalEntries (ISIN, AllocationID, EntryType, AccountType, 
-    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, 
-    ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10, ProdLevel11, 
-    Amount, Description)
+-- TPL Journal (Original 12 rows with allocated amounts)
 SELECT 
-    ar.ISIN,
-    ar.AllocationID,
-    'DEBIT' as EntryType,
-    'TPL' as AccountType,
-    tpl.ProdLevel2, tpl.ProdLevel3, tpl.ProdLevel4, tpl.ProdLevel5, tpl.ProdLevel6,
-    tpl.ProdLevel7, tpl.ProdLevel8, tpl.ProdLevel9, tpl.ProdLevel10, tpl.ProdLevel11,
-    ar.AllocatedAmount as Amount,  -- Positive for TPL
-    'Cross-entity netting allocation at Level ' + CAST(ar.AllocationLevel AS VARCHAR) + 
-    ' - TPL side for ' + ar.MatchPath
-FROM #AllocationResults ar
-INNER JOIN #WorkingData tpl ON ar.TPLRowID = tpl.RowID;
+    'TPL_JOURNAL' as journal_type,
+    ROW_NUMBER() OVER (ORDER BY ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10) as row_id,
+    isin,
+    ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10,
+    original_amount,
+    allocated_amount,
+    CASE WHEN original_amount >= 0 THEN -allocated_amount ELSE allocated_amount END as journal_amount
+FROM #TPL_Journal
+ORDER BY ProdLevel2, ProdLevel3, ProdLevel4, ProdLevel5, ProdLevel6, ProdLevel7, ProdLevel8, ProdLevel9, ProdLevel10;
 
--- Display Journal Entries Summary
-PRINT '';
-PRINT 'Journal Summary by Account Type:';
+-- Summary and Validation
 SELECT 
-    AccountType,
-    EntryType,
-    COUNT(*) as NumEntries,
-    SUM(Amount) as TotalAmount
-FROM #JournalEntries
-GROUP BY AccountType, EntryType
-ORDER BY AccountType, EntryType;
-
--- Verify journal balance (should be zero)
-PRINT '';
-PRINT 'Journal Balance Check:';
-SELECT 
-    'Total Journal Balance' as Description,
-    SUM(Amount) as Balance,
-    CASE 
-        WHEN ABS(SUM(Amount)) < 0.01 THEN 'BALANCED' 
-        ELSE 'NOT BALANCED - CHECK ENTRIES!' 
-    END as Status
-FROM #JournalEntries;
-
--- Display detailed journal entries
-PRINT '';
-PRINT 'Detailed Journal Entries:';
-SELECT 
-    JournalID,
-    AllocationID,
-    AccountType,
-    EntryType,
-    ProdLevel2 + ' > ' + ISNULL(ProdLevel3,'') + ' > ' + ISNULL(ProdLevel4,'') as HierarchyPath,
-    Amount,
-    Description
-FROM #JournalEntries
-ORDER BY AllocationID, AccountType DESC;  -- TPA first, then TPL
-
--- Display journal entries paired by allocation
-PRINT '';
-PRINT 'Journal Entries Paired by Allocation:';
-SELECT 
-    j1.AllocationID,
-    'TPA' as Side1,
-    j1.Amount as TPAAmount,
-    j1.ProdLevel2 + ' > ' + ISNULL(j1.ProdLevel3,'') + ' > ' + ISNULL(j1.ProdLevel4,'') as TPAPath,
-    'TPL' as Side2,
-    j2.Amount as TPLAmount,
-    j2.ProdLevel2 + ' > ' + ISNULL(j2.ProdLevel3,'') + ' > ' + ISNULL(j2.ProdLevel4,'') as TPLPath,
-    j1.Amount + j2.Amount as NetAmount
-FROM #JournalEntries j1
-INNER JOIN #JournalEntries j2 ON j1.AllocationID = j2.AllocationID 
-    AND j1.AccountType = 'TPA' AND j2.AccountType = 'TPL'
-ORDER BY j1.AllocationID;
-
--- Export-ready journal format
-PRINT '';
-PRINT 'Export-Ready Journal Format:';
-SELECT * FROM #CrossNetting
-SELECT * FROM #BusinessDetails
-
-SELECT 
-    JournalID,
-    ISIN,
-    AllocationID,
-    AccountType,
-    EntryType,
-    ProdLevel2,
-    ProdLevel3,
-    ProdLevel4,
-    ProdLevel5,
-    ProdLevel6,
-    ProdLevel7,
-    ProdLevel8,
-    ProdLevel9,
-    ProdLevel10,
-    ProdLevel11,
-    Amount,
-    GETDATE() as PostingDate,
-    'CROSS_ENTITY_NETTING' as JournalType,
-    Description
-FROM #JournalEntries
-
-ORDER BY AccountType DESC;
-
-DROP TABLE #JournalEntries;
+    'ALLOCATION_SUMMARY' as summary_type,
+    (SELECT CrossEntityNetting FROM CrossEntityNetting) as original_cross_entity_amount,
+    (SELECT SUM(allocated_amount) FROM #TPA_Journal) as total_tpa_allocated,
+    (SELECT SUM(allocated_amount) FROM #TPL_Journal) as total_tpl_allocated,
+    (SELECT SUM(allocated_amount) FROM #TPA_Journal) + (SELECT SUM(allocated_amount) FROM #TPL_Journal) as total_allocated,
+    (SELECT remaining_amount FROM #RemainingAmount) as remaining_unallocated,
+    (SELECT COUNT(*) FROM #TPA_Journal) as tpa_rows,
+    (SELECT COUNT(*) FROM #TPL_Journal) as tpl_rows;
 
 -- Clean up
-DROP TABLE #CrossNetting;
-DROP TABLE #BusinessDetails;
-DROP TABLE #WorkingData;
-DROP TABLE #AllocationResults;
+DROP TABLE #RemainingAmount;
+DROP TABLE #TPA_Journal;
+DROP TABLE #TPL_Journal;
