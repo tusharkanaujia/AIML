@@ -1,0 +1,103 @@
+This error occurs because you're trying to read a very large HTTP response (approaching the 2GB limit for a 32-bit signed integer) into memory all at once. The issue is on line 90 where ReadAsStringAsync() attempts to load the entire response into a string buffer.Here are several solutions to handle large API responses:Solution 1: Stream the Response (Recommended)public static async DataTable ProcessRepositoriesAsync(HttpClient client, string url)
+{
+    DataTable dt = new DataTable();
+    try
+    {
+        client.Timeout = TimeSpan.FromMinutes(120);
+        
+        using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+        {
+            if (response.StatusCode.ToString() == "OK")
+            {
+                using (var stream = await response.Content.ReadAsStreamAsync())
+                using (var reader = new StreamReader(stream))
+                {
+                    string content = await reader.ReadToEndAsync();
+                    var jobject = JObject.Parse(content);
+                    
+                    // Rest of your processing code...
+                    JArray columns = (JArray)jobject["data"]["tables"][0]["columns"];
+                    var rows = (JArray)jobject["data"]["tables"][0]["rows"];
+                    
+                    // Continue with your existing logic...
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        // Handle exception
+        throw;
+    }
+    return dt;
+}Solution 2: Process in Chunkspublic static async DataTable ProcessRepositoriesAsync(HttpClient client, string url)
+{
+    DataTable dt = new DataTable();
+    try
+    {
+        client.Timeout = TimeSpan.FromMinutes(120);
+        
+        using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+        {
+            if (response.StatusCode.ToString() == "OK")
+            {
+                using (var stream = await response.Content.ReadAsStreamAsync())
+                using (var reader = new StreamReader(stream))
+                {
+                    const int bufferSize = 8192; // 8KB chunks
+                    char[] buffer = new char[bufferSize];
+                    StringBuilder jsonBuilder = new StringBuilder();
+                    
+                    int charsRead;
+                    while ((charsRead = await reader.ReadAsync(buffer, 0, bufferSize)) > 0)
+                    {
+                        jsonBuilder.Append(buffer, 0, charsRead);
+                    }
+                    
+                    var jobject = JObject.Parse(jsonBuilder.ToString());
+                    // Rest of your processing...
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        throw;
+    }
+    return dt;
+}Solution 3: Use JsonTextReader for Large JSONpublic static async DataTable ProcessRepositoriesAsync(HttpClient client, string url)
+{
+    DataTable dt = new DataTable();
+    try
+    {
+        client.Timeout = TimeSpan.FromMinutes(120);
+        
+        using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+        {
+            if (response.StatusCode.ToString() == "OK")
+            {
+                using (var stream = await response.Content.ReadAsStreamAsync())
+                using (var reader = new StreamReader(stream))
+                using (var jsonReader = new JsonTextReader(reader))
+                {
+                    var serializer = new JsonSerializer();
+                    var jobject = serializer.Deserialize<JObject>(jsonReader);
+                    
+                    // Process your data...
+                    JArray columns = (JArray)jobject["data"]["tables"][0]["columns"];
+                    var rows = (JArray)jobject["data"]["tables"][0]["rows"];
+                    
+                    // Continue with existing logic...
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        throw;
+    }
+    return dt;
+}Solution 4: Increase HttpClient Buffer Size// Configure HttpClient with larger buffer
+var handler = new HttpClientHandler();
+var client = new HttpClient(handler);
+client.MaxResponseContentBufferSize = long.MaxValue; // Remove the 2GB limitKey Changes Made:Removed Task.Run() - Not needed for async HTTP callsUsed HttpCompletionOption.ResponseHeadersRead - Starts processing headers immediatelyStream processing - Avoids loading entire response into memoryProper using statements - Ensures resources are disposedAdditional Recommendations:Consider if you really need all that data at onceImplement pagination if the API supports itUse IAsyncEnumerable if processing row by rowConsider saving large responses to a file first, then processingThe streaming approach (Solution 1) is usually the best choice as it's memory-efficient and handles large responses gracefully.
