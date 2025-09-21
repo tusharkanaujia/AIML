@@ -1,0 +1,984 @@
+# FastAPI and web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database connectivity
+pyodbc==4.0.39
+pandas==2.1.3
+sqlparse==0.4.4
+
+# HTTP requests for local LLM
+requests==2.31.0
+
+# Additional utilities
+python-dotenv==1.0.0
+pydantic==2.4.2
+
+# Development tools (optional)
+pytest==7.4.3
+black==23.10.1
+flake8==6.1.0
+
+---------------------------------
+
+import React, { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import { Send, Database, Grid, BarChart3, MessageCircle, Copy, Download, Settings, CheckCircle, XCircle } from 'lucide-react';
+
+const API_BASE_URL = 'http://localhost:8000';
+
+const DatabaseRAG = () => {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [conversationHistory, setConversationHistory] = useState([]);
+  const [schema, setSchema] = useState(null);
+  const [tables, setTables] = useState([]);
+  const [llamaStatus, setLlamaStatus] = useState(null);
+  const [activeTab, setActiveTab] = useState('chat');
+
+  useEffect(() => {
+    fetchSchema();
+    fetchTables();
+    checkLlamaStatus();
+  }, []);
+
+  const checkLlamaStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/llama-status`);
+      const data = await response.json();
+      setLlamaStatus(data);
+    } catch (err) {
+      setLlamaStatus({
+        status: 'error',
+        error: 'Failed to connect to backend server'
+      });
+    }
+  };
+
+  const fetchSchema = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/schema`);
+      const data = await response.json();
+      setSchema(data.schema);
+    } catch (err) {
+      console.error('Failed to fetch schema:', err);
+    }
+  };
+
+  const fetchTables = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/tables`);
+      const data = await response.json();
+      setTables(data.tables);
+    } catch (err) {
+      console.error('Failed to fetch tables:', err);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+
+    setLoading(true);
+    setError('');
+    setResults(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          question: query,
+          conversation_history: conversationHistory.slice(-5) // Last 5 exchanges
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setResults(data);
+        setConversationHistory([...conversationHistory, {
+          question: query,
+          answer: data.explanation,
+          sql: data.sql_query,
+          timestamp: new Date().toISOString()
+        }]);
+      }
+      
+      setQuery('');
+    } catch (err) {
+      setError('Failed to connect to the server. Make sure the backend is running.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const downloadCSV = (data) => {
+    if (!data || data.length === 0) return;
+    
+    const headers = Object.keys(data[0]);
+    const csvContent = [
+      headers.join(','),
+      ...data.map(row => headers.map(header => 
+        JSON.stringify(row[header] || '')
+      ).join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'query_results.csv';
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const renderChart = (data, chartConfig) => {
+    if (!chartConfig || !data || data.length === 0) return null;
+
+    const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+
+    switch (chartConfig.type) {
+      case 'bar':
+        return (
+          <div className="mt-6">
+            <h3 className="text-lg font-semibold mb-4">{chartConfig.title}</h3>
+            <div className="w-full h-80">
+              <BarChart width={800} height={300} data={data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey={chartConfig.x_axis} />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey={chartConfig.y_axis} fill="#0088FE" />
+              </BarChart>
+            </div>
+          </div>
+        );
+        
+      case 'line':
+        return (
+          <div className="mt-6">
+            <h3 className="text-lg font-semibold mb-4">{chartConfig.title}</h3>
+            <div className="w-full h-80">
+              <LineChart width={800} height={300} data={data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey={chartConfig.x_axis} />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey={chartConfig.y_axis} stroke="#0088FE" />
+              </LineChart>
+            </div>
+          </div>
+        );
+        
+      case 'pie':
+        return (
+          <div className="mt-6">
+            <h3 className="text-lg font-semibold mb-4">{chartConfig.title}</h3>
+            <div className="w-full h-80 flex justify-center">
+              <PieChart width={400} height={300}>
+                <Pie
+                  data={data}
+                  cx={200}
+                  cy={150}
+                  labelLine={false}
+                  label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  outerRadius={80}
+                  fill="#8884d8"
+                  dataKey={chartConfig.y_axis}
+                >
+                  {data.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </div>
+          </div>
+        );
+        
+      default:
+        return null;
+    }
+  };
+
+  const renderTable = (data) => {
+    if (!data || data.length === 0) return <p className="text-gray-500">No data to display</p>;
+
+    const headers = Object.keys(data[0]);
+    
+    return (
+      <div className="mt-4 overflow-x-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Query Results ({data.length} rows)</h3>
+          <button
+            onClick={() => downloadCSV(data)}
+            className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+          >
+            <Download size={16} />
+            CSV
+          </button>
+        </div>
+        <table className="min-w-full bg-white border border-gray-200 rounded-lg">
+          <thead className="bg-gray-50">
+            <tr>
+              {headers.map((header) => (
+                <th key={header} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b">
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {data.slice(0, 50).map((row, index) => (
+              <tr key={index} className={index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                {headers.map((header) => (
+                  <td key={header} className="px-4 py-3 text-sm text-gray-900 border-b">
+                    {row[header] !== null && row[header] !== undefined ? String(row[header]) : 'NULL'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {data.length > 50 && (
+          <p className="text-sm text-gray-500 mt-2">Showing first 50 rows of {data.length} total rows</p>
+        )}
+      </div>
+    );
+  };
+
+  const renderConversationHistory = () => (
+    <div className="space-y-4 max-h-96 overflow-y-auto">
+      {conversationHistory.map((item, index) => (
+        <div key={index} className="border border-gray-200 rounded-lg p-4">
+          <div className="font-medium text-blue-600 mb-2">Q: {item.question}</div>
+          <div className="text-gray-700 mb-2">A: {item.answer}</div>
+          <div className="text-xs text-gray-500 bg-gray-100 p-2 rounded">
+            <strong>SQL:</strong> {item.sql}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderSchema = () => (
+    <div className="space-y-4 max-h-96 overflow-y-auto">
+      {schema && Object.entries(schema).map(([tableName, columns]) => (
+        <div key={tableName} className="border border-gray-200 rounded-lg p-4">
+          <h3 className="font-semibold text-blue-600 mb-2">{tableName}</h3>
+          <div className="grid grid-cols-1 gap-1">
+            {columns.map((col, index) => (
+              <div key={index} className="text-sm">
+                <span className="font-mono">{col.column}</span>
+                <span className="text-gray-500"> ({col.type})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      <div className="max-w-7xl mx-auto">
+        <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6">
+            <h1 className="text-3xl font-bold flex items-center gap-3">
+              <Database size={32} />
+              Database RAG Assistant
+            </h1>
+            <p className="mt-2 opacity-90">Ask questions about your SQL Server database in natural language</p>
+          </div>
+
+          {/* Navigation */}
+          <div className="bg-gray-50 border-b border-gray-200">
+            <nav className="flex space-x-8 px-6">
+              <button
+                onClick={() => setActiveTab('chat')}
+                className={`py-3 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'chat' 
+                    ? 'border-blue-500 text-blue-600' 
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <MessageCircle className="inline mr-2" size={16} />
+                Chat
+              </button>
+              <button
+                onClick={() => setActiveTab('schema')}
+                className={`py-3 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'schema' 
+                    ? 'border-blue-500 text-blue-600' 
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Grid className="inline mr-2" size={16} />
+                Schema
+              </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`py-3 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'history' 
+                    ? 'border-blue-500 text-blue-600' 
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <BarChart3 className="inline mr-2" size={16} />
+                History
+              </button>
+              <button
+                onClick={() => setActiveTab('status')}
+                className={`py-3 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'status' 
+                    ? 'border-blue-500 text-blue-600' 
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Settings className="inline mr-2" size={16} />
+                Status
+              </button>
+            </nav>
+          </div>
+
+          <div className="p-6">
+            {activeTab === 'chat' && (
+              <>
+                {/* Query Input */}
+                <div className="mb-6">
+                  <div className="flex gap-4">
+                    <input
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Ask a question about your database... (e.g., 'Show me sales data for last month')"
+                      className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      disabled={loading}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSubmit(e)}
+                    />
+                    <button
+                      onClick={handleSubmit}
+                      disabled={loading || !query.trim()}
+                      className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {loading ? 'Processing...' : <><Send size={16} /> Ask</>}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Error Display */}
+                {error && (
+                  <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
+                    <strong>Error:</strong> {error}
+                  </div>
+                )}
+
+                {/* Results */}
+                {results && (
+                  <div className="space-y-6">
+                    {/* Explanation */}
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <h3 className="font-semibold text-blue-800 mb-2">Query Explanation:</h3>
+                      <p className="text-blue-700">{results.explanation}</p>
+                    </div>
+
+                    {/* SQL Query */}
+                    {results.sql_query && (
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div className="flex justify-between items-center mb-2">
+                          <h3 className="font-semibold text-gray-800">Generated SQL:</h3>
+                          <button
+                            onClick={() => copyToClipboard(results.sql_query)}
+                            className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+                          >
+                            <Copy size={14} />
+                            Copy
+                          </button>
+                        </div>
+                        <pre className="text-sm bg-white p-3 rounded border overflow-x-auto">
+                          <code>{results.sql_query}</code>
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Chart */}
+                    {results.chart_config && renderChart(results.data, results.chart_config)}
+
+                    {/* Data Table */}
+                    {renderTable(results.data)}
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeTab === 'schema' && (
+              <div>
+                <h2 className="text-xl font-semibold mb-4">Database Schema</h2>
+                {renderSchema()}
+              </div>
+            )}
+
+            {activeTab === 'history' && (
+              <div>
+                <h2 className="text-xl font-semibold mb-4">Conversation History</h2>
+                {conversationHistory.length === 0 ? (
+                  <p className="text-gray-500">No conversation history yet. Start asking questions!</p>
+                ) : (
+                  renderConversationHistory()
+                )}
+              </div>
+            )}
+
+            {activeTab === 'status' && (
+              <div>
+                <h2 className="text-xl font-semibold mb-4">System Status</h2>
+                
+                {/* Llama Server Status */}
+                <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-lg font-medium">Local Llama Server</h3>
+                    <button
+                      onClick={checkLlamaStatus}
+                      className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  
+                  {llamaStatus ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        {llamaStatus.status === 'connected' ? (
+                          <CheckCircle className="text-green-500" size={20} />
+                        ) : (
+                          <XCircle className="text-red-500" size={20} />
+                        )}
+                        <span className={`font-medium ${
+                          llamaStatus.status === 'connected' ? 'text-green-700' : 'text-red-700'
+                        }`}>
+                          {llamaStatus.status === 'connected' ? 'Connected' : 'Disconnected'}
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <strong>Server URL:</strong>
+                          <div className="font-mono text-blue-600">{llamaStatus.server_url}</div>
+                        </div>
+                        <div>
+                          <strong>Model:</strong>
+                          <div className="font-mono text-blue-600">{llamaStatus.model}</div>
+                        </div>
+                      </div>
+                      
+                      {llamaStatus.test_response && (
+                        <div>
+                          <strong>Test Response:</strong>
+                          <div className="bg-gray-100 p-2 rounded mt-1 text-sm">
+                            {llamaStatus.test_response}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {llamaStatus.error && (
+                        <div className="bg-red-50 border border-red-200 rounded p-3">
+                          <strong className="text-red-700">Error:</strong>
+                          <div className="text-red-600 text-sm mt-1">{llamaStatus.error}</div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-gray-500">Checking server status...</div>
+                  )}
+                </div>
+
+                {/* Database Status */}
+                <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+                  <h3 className="text-lg font-medium mb-3">Database Connection</h3>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      {schema ? (
+                        <CheckCircle className="text-green-500" size={20} />
+                      ) : (
+                        <XCircle className="text-red-500" size={20} />
+                      )}
+                      <span className={`font-medium ${
+                        schema ? 'text-green-700' : 'text-red-700'
+                      }`}>
+                        {schema ? 'Connected' : 'Not Connected'}
+                      </span>
+                    </div>
+                    
+                    {schema && (
+                      <div className="text-sm">
+                        <strong>Available Tables:</strong>
+                        <div className="text-blue-600">{tables.length} tables found</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Configuration Guide */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h3 className="text-lg font-medium text-blue-800 mb-3">Configuration Guide</h3>
+                  <div className="text-sm text-blue-700 space-y-2">
+                    <p><strong>For Ollama:</strong> Make sure Ollama is running on port 11434</p>
+                    <p><strong>For text-generation-webui:</strong> Start with --api flag</p>
+                    <p><strong>For OpenAI-compatible servers:</strong> Ensure /v1/chat/completions endpoint is available</p>
+                    <p><strong>Environment Variables:</strong></p>
+                    <ul className="list-disc list-inside ml-4 space-y-1">
+                      <li>LLAMA_SERVER_URL: Your server URL (default: http://localhost:11434)</li>
+                      <li>LLAMA_MODEL: Model name (default: llama3.1)</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default DatabaseRAG;
+
+
+
+
+------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import pyodbc
+import pandas as pd
+import requests
+import json
+from typing import List, Dict, Any, Optional
+import os
+from datetime import datetime
+import sqlparse
+
+app = FastAPI(title="SQL RAG API", description="RAG system for SQL Server database")
+
+# CORS middleware for React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configuration
+DATABASE_CONFIG = {
+    'driver': '{ODBC Driver 17 for SQL Server}',
+    'server': 'your_server_name',
+    'database': 'your_database_name',
+    'username': 'your_username',
+    'password': 'your_password',
+    'trusted_connection': 'yes'  # Use this for Windows Authentication
+}
+
+# Local Llama server configuration
+LLAMA_CONFIG = {
+    'base_url': os.getenv("LLAMA_SERVER_URL", "http://localhost:11434"),  # Default Ollama port
+    'model': os.getenv("LLAMA_MODEL", "llama3.1"),  # Default model name
+    'timeout': 60,  # Request timeout in seconds
+    'max_tokens': 1000,
+    'temperature': 0.1
+}
+
+# Request/Response models
+class QueryRequest(BaseModel):
+    question: str
+    conversation_history: Optional[List[Dict[str, str]]] = []
+
+class QueryResponse(BaseModel):
+    sql_query: str
+    explanation: str
+    data: List[Dict[str, Any]]
+    chart_config: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+class DatabaseInfo:
+    def __init__(self):
+        self.schema_info = None
+        self.sample_data = None
+    
+    def get_connection(self):
+        """Create database connection"""
+        conn_string = (
+            f"DRIVER={DATABASE_CONFIG['driver']};"
+            f"SERVER={DATABASE_CONFIG['server']};"
+            f"DATABASE={DATABASE_CONFIG['database']};"
+            f"UID={DATABASE_CONFIG['username']};"
+            f"PWD={DATABASE_CONFIG['password']};"
+            f"Trusted_Connection={DATABASE_CONFIG['trusted_connection']};"
+        )
+        return pyodbc.connect(conn_string)
+    
+    def get_schema_info(self):
+        """Get database schema information"""
+        if self.schema_info:
+            return self.schema_info
+            
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        schema_query = """
+        SELECT 
+            t.TABLE_SCHEMA,
+            t.TABLE_NAME,
+            c.COLUMN_NAME,
+            c.DATA_TYPE,
+            c.IS_NULLABLE,
+            c.COLUMN_DEFAULT
+        FROM INFORMATION_SCHEMA.TABLES t
+        JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+        WHERE t.TABLE_TYPE = 'BASE TABLE'
+        ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
+        """
+        
+        df = pd.read_sql(schema_query, conn)
+        
+        # Group by table for better organization
+        schema_dict = {}
+        for _, row in df.iterrows():
+            table_key = f"{row['TABLE_SCHEMA']}.{row['TABLE_NAME']}"
+            if table_key not in schema_dict:
+                schema_dict[table_key] = []
+            schema_dict[table_key].append({
+                'column': row['COLUMN_NAME'],
+                'type': row['DATA_TYPE'],
+                'nullable': row['IS_NULLABLE'],
+                'default': row['COLUMN_DEFAULT']
+            })
+        
+        conn.close()
+        self.schema_info = schema_dict
+        return self.schema_info
+    
+    def get_sample_data(self, table_name: str, limit: int = 3):
+        """Get sample data from a table"""
+        conn = self.get_connection()
+        try:
+            query = f"SELECT TOP {limit} * FROM {table_name}"
+            df = pd.read_sql(query, conn)
+            return df.to_dict('records')
+        except Exception as e:
+            return f"Error getting sample data: {str(e)}"
+        finally:
+            conn.close()
+
+db_info = DatabaseInfo()
+
+def call_local_llama(prompt: str) -> str:
+    """Call local Llama server API"""
+    try:
+        # Try Ollama API format first
+        ollama_payload = {
+            "model": LLAMA_CONFIG['model'],
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": LLAMA_CONFIG['temperature'],
+                "num_predict": LLAMA_CONFIG['max_tokens']
+            }
+        }
+        
+        response = requests.post(
+            f"{LLAMA_CONFIG['base_url']}/api/generate",
+            json=ollama_payload,
+            timeout=LLAMA_CONFIG['timeout'],
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('response', '').strip()
+        
+        # If Ollama format fails, try OpenAI-compatible format
+        openai_payload = {
+            "model": LLAMA_CONFIG['model'],
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": LLAMA_CONFIG['temperature'],
+            "max_tokens": LLAMA_CONFIG['max_tokens']
+        }
+        
+        response = requests.post(
+            f"{LLAMA_CONFIG['base_url']}/v1/chat/completions",
+            json=openai_payload,
+            timeout=LLAMA_CONFIG['timeout'],
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content'].strip()
+        
+        # Try text-generation-webui format
+        textgen_payload = {
+            "prompt": prompt,
+            "max_new_tokens": LLAMA_CONFIG['max_tokens'],
+            "temperature": LLAMA_CONFIG['temperature'],
+            "do_sample": True,
+            "stopping_strings": ["</s>", "Human:", "Assistant:"]
+        }
+        
+        response = requests.post(
+            f"{LLAMA_CONFIG['base_url']}/api/v1/generate",
+            json=textgen_payload,
+            timeout=LLAMA_CONFIG['timeout'],
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['results'][0]['text'].strip()
+            
+        raise Exception(f"All API formats failed. Last response: {response.status_code} - {response.text}")
+        
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Failed to connect to Llama server at {LLAMA_CONFIG['base_url']}: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Llama API Error: {str(e)}")
+
+def generate_sql_with_llm(question: str, schema_info: dict, conversation_history: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Generate SQL query using local Llama model"""
+    
+    # Create schema context
+    schema_context = "Database Schema:\n"
+    for table, columns in schema_info.items():
+        schema_context += f"\nTable: {table}\n"
+        for col in columns:
+            schema_context += f"  - {col['column']} ({col['type']})\n"
+    
+    # Create conversation context
+    conversation_context = ""
+    if conversation_history:
+        conversation_context = "\nPrevious conversation:\n"
+        for msg in conversation_history[-3:]:  # Last 3 messages for context
+            conversation_context += f"Q: {msg.get('question', '')}\nA: {msg.get('answer', '')}\n"
+    
+    prompt = f"""You are a SQL expert. Generate a SQL Server compatible query based on the user's question.
+
+{schema_context}
+{conversation_context}
+
+User Question: {question}
+
+Instructions:
+1. Generate ONLY valid SQL Server T-SQL syntax
+2. Use appropriate JOINs when needed
+3. Include TOP clause for large datasets (e.g., TOP 100)
+4. Suggest appropriate chart type if the data would benefit from visualization
+5. Provide a brief explanation of what the query does
+6. Return response in JSON format
+
+Response format (JSON only):
+{{
+    "sql_query": "SELECT ...",
+    "explanation": "Brief explanation of the query",
+    "chart_suggestion": {{
+        "type": "bar|line|pie|table",
+        "x_axis": "column_name",
+        "y_axis": "column_name", 
+        "title": "Chart title"
+    }}
+}}
+
+Important: Return ONLY the JSON response, no additional text or formatting."""
+
+    try:
+        response_text = call_local_llama(prompt)
+        
+        # Try to extract JSON from response
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        
+        if json_start != -1 and json_end > json_start:
+            json_text = response_text[json_start:json_end]
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError:
+                pass
+        
+        # Fallback: try to parse the entire response as JSON
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            # Last resort: extract SQL manually and create basic response
+            lines = response_text.split('\n')
+            sql_line = ""
+            explanation_line = ""
+            
+            for line in lines:
+                line_upper = line.strip().upper()
+                if line_upper.startswith('SELECT') or line_upper.startswith('WITH'):
+                    sql_line = line.strip()
+                    break
+            
+            return {
+                "sql_query": sql_line,
+                "explanation": "Generated SQL query from natural language",
+                "chart_suggestion": None
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM Error: {str(e)}")
+
+@app.get("/llama-status")
+async def check_llama_status():
+    """Check if local Llama server is accessible"""
+    try:
+        # Test connection with a simple prompt
+        test_response = call_local_llama("Hello, are you working?")
+        return {
+            "status": "connected", 
+            "server_url": LLAMA_CONFIG['base_url'],
+            "model": LLAMA_CONFIG['model'],
+            "test_response": test_response[:100] + "..." if len(test_response) > 100 else test_response
+        }
+    except Exception as e:
+        return {
+            "status": "error", 
+            "server_url": LLAMA_CONFIG['base_url'],
+            "model": LLAMA_CONFIG['model'],
+            "error": str(e)
+        }
+
+def execute_sql_query(sql_query: str) -> List[Dict[str, Any]]:
+    """Execute SQL query and return results"""
+    conn = db_info.get_connection()
+    try:
+        # Validate and clean the SQL query
+        parsed = sqlparse.parse(sql_query)
+        if not parsed:
+            raise ValueError("Invalid SQL query")
+        
+        df = pd.read_sql(sql_query, conn)
+        
+        # Convert datetime objects to strings for JSON serialization
+        for col in df.columns:
+            if df[col].dtype == 'datetime64[ns]':
+                df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        return df.to_dict('records')
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SQL Execution Error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/")
+async def root():
+    return {"message": "SQL RAG API is running"}
+
+@app.get("/schema")
+async def get_schema():
+    """Get database schema information"""
+    try:
+        schema = db_info.get_schema_info()
+        return {"schema": schema}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query", response_model=QueryResponse)
+async def query_database(request: QueryRequest):
+    """Process natural language query and return results"""
+    try:
+        # Get schema information
+        schema = db_info.get_schema_info()
+        
+        # Generate SQL using LLM
+        llm_response = generate_sql_with_llm(
+            request.question, 
+            schema, 
+            request.conversation_history
+        )
+        
+        sql_query = llm_response.get("sql_query", "")
+        explanation = llm_response.get("explanation", "")
+        chart_suggestion = llm_response.get("chart_suggestion")
+        
+        if not sql_query:
+            return QueryResponse(
+                sql_query="",
+                explanation="Could not generate SQL query",
+                data=[],
+                error="Failed to generate SQL query"
+            )
+        
+        # Execute the SQL query
+        data = execute_sql_query(sql_query)
+        
+        return QueryResponse(
+            sql_query=sql_query,
+            explanation=explanation,
+            data=data,
+            chart_config=chart_suggestion
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        return QueryResponse(
+            sql_query="",
+            explanation="",
+            data=[],
+            error=str(e)
+        )
+
+@app.get("/tables")
+async def get_tables():
+    """Get list of all tables"""
+    try:
+        schema = db_info.get_schema_info()
+        tables = list(schema.keys())
+        return {"tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sample/{table_name}")
+async def get_sample_data(table_name: str):
+    """Get sample data from a specific table"""
+    try:
+        sample_data = db_info.get_sample_data(table_name)
+        return {"table": table_name, "sample_data": sample_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+-------------------------
+
+
