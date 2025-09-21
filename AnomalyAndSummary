@@ -1,0 +1,458 @@
+import pandas as pd
+import numpy as np
+import pyodbc
+from datetime import datetime, timedelta
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
+
+class AttributeBasedAnomalyDetector:
+    def __init__(self, connection_string):
+        """
+        Initialize the attribute-based anomaly detector with SQL Server connection
+        
+        Args:
+            connection_string (str): SQL Server connection string
+        """
+        self.connection_string = connection_string
+        self.raw_data = None
+        self.pivot_data = None
+        self.anomaly_results = None
+        self.attribute_anomalies = {}
+        self.date_column = None
+        
+    def connect_and_fetch_data(self, query, date_column='BusinessDate'):
+        """
+        Connect to SQL Server and fetch financial data with multiple attributes
+        
+        Args:
+            query (str): SQL query to fetch data
+            date_column (str): Name of the date/timestamp column
+        """
+        try:
+            conn = pyodbc.connect(self.connection_string)
+            self.raw_data = pd.read_sql(query, conn)
+            conn.close()
+            
+            # Convert date column to datetime
+            if date_column in self.raw_data.columns:
+                self.raw_data[date_column] = pd.to_datetime(self.raw_data[date_column])
+                self.raw_data = self.raw_data.sort_values(date_column)
+                self.raw_data.reset_index(drop=True, inplace=True)
+                self.date_column = date_column
+            
+            print(f"Data fetched successfully. Shape: {self.raw_data.shape}")
+            print(f"Date range: {self.raw_data[date_column].min()} to {self.raw_data[date_column].max()}")
+            print(f"Columns: {list(self.raw_data.columns)}")
+            return True
+            
+        except Exception as e:
+            print(f"Error fetching data: {str(e)}")
+            return False
+    
+    def detect_attribute_anomalies(self, categorical_attributes, value_column='GBPAmount', 
+                                 method='isolation_forest', contamination=0.1, min_observations=10):
+        """
+        Detect anomalies by date for different attribute combinations
+        
+        Args:
+            categorical_attributes (list): List of categorical columns to analyze
+            value_column (str): The numeric column to analyze for anomalies
+            method (str): Anomaly detection method
+            contamination (float): Expected proportion of anomalies
+            min_observations (int): Minimum observations required for anomaly detection
+        """
+        if self.raw_data is None:
+            print("No data available. Please fetch data first.")
+            return
+        
+        print(f"\n🔍 Detecting anomalies for attributes: {categorical_attributes}")
+        print(f"Analyzing: {value_column}")
+        
+        self.anomaly_results = []
+        self.attribute_anomalies = {}
+        
+        # Get unique combinations of categorical attributes
+        if len(categorical_attributes) == 1:
+            unique_combinations = self.raw_data[categorical_attributes[0]].unique()
+            combinations = [(combo,) for combo in unique_combinations]
+        else:
+            combinations = self.raw_data[categorical_attributes].drop_duplicates().values.tolist()
+        
+        print(f"Analyzing {len(combinations)} unique attribute combinations...")
+        
+        # Analyze each attribute combination separately
+        for combo in combinations:
+            if len(categorical_attributes) == 1:
+                combo = combo[0] if isinstance(combo, tuple) else combo
+                filter_condition = self.raw_data[categorical_attributes[0]] == combo
+                combo_name = f"{categorical_attributes[0]}={combo}"
+            else:
+                filter_condition = True
+                combo_name_parts = []
+                for i, attr in enumerate(categorical_attributes):
+                    filter_condition &= (self.raw_data[attr] == combo[i])
+                    combo_name_parts.append(f"{attr}={combo[i]}")
+                combo_name = " | ".join(combo_name_parts)
+            
+            # Get time series for this attribute combination
+            combo_data = self.raw_data[filter_condition].copy()
+            
+            if len(combo_data) < min_observations:
+                continue
+            
+            # Create daily time series (aggregate by date if multiple records per date)
+            daily_data = combo_data.groupby(self.date_column)[value_column].agg(['sum', 'mean', 'count', 'std']).reset_index()
+            daily_data.columns = [self.date_column, f'{value_column}_sum', f'{value_column}_mean', 
+                                f'{value_column}_count', f'{value_column}_std']
+            daily_data[f'{value_column}_std'] = daily_data[f'{value_column}_std'].fillna(0)
+            
+            if len(daily_data) < min_observations:
+                continue
+            
+            # Detect anomalies in this time series
+            anomalies = self._detect_time_series_anomalies(
+                daily_data, combo_name, value_column, method, contamination
+            )
+            
+            if anomalies['anomaly_count'] > 0:
+                self.anomaly_results.extend(anomalies['anomaly_records'])
+                self.attribute_anomalies[combo_name] = anomalies
+        
+        print(f"✅ Completed analysis. Found anomalies in {len(self.attribute_anomalies)} attribute combinations.")
+    
+    def _detect_time_series_anomalies(self, daily_data, combo_name, value_column, method, contamination):
+        """
+        Detect anomalies in a single time series for an attribute combination
+        """
+        # Prepare features for anomaly detection
+        numeric_cols = [col for col in daily_data.columns if col != self.date_column and daily_data[col].dtype in ['float64', 'int64']]
+        features = daily_data[numeric_cols].fillna(0)
+        
+        if len(features) < 5:  # Need minimum data points
+            return {'anomaly_count': 0, 'anomaly_records': []}
+        
+        # Apply anomaly detection
+        if method == 'isolation_forest':
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(features)
+            
+            iso_forest = IsolationForest(contamination=contamination, random_state=42)
+            anomaly_labels = iso_forest.fit_predict(scaled_features)
+            anomaly_scores = iso_forest.decision_function(scaled_features)
+            
+        elif method == 'zscore':
+            z_scores = np.abs(stats.zscore(features))
+            anomaly_labels = np.where((z_scores > 3).any(axis=1), -1, 1)
+            anomaly_scores = z_scores.max(axis=1)
+            
+        elif method == 'iqr':
+            Q1 = features.quantile(0.25)
+            Q3 = features.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            anomaly_labels = np.where(((features < lower_bound) | (features > upper_bound)).any(axis=1), -1, 1)
+            anomaly_scores = ((features < lower_bound) | (features > upper_bound)).sum(axis=1)
+        
+        # Create anomaly records
+        daily_data['is_anomaly'] = (anomaly_labels == -1)
+        daily_data['anomaly_score'] = anomaly_scores
+        daily_data['attribute_combination'] = combo_name
+        
+        anomaly_records = daily_data[daily_data['is_anomaly']].to_dict('records')
+        
+        # Calculate statistics
+        anomaly_count = sum(anomaly_labels == -1)
+        total_days = len(daily_data)
+        anomaly_rate = (anomaly_count / total_days) * 100
+        
+        return {
+            'attribute_combination': combo_name,
+            'total_days': total_days,
+            'anomaly_count': anomaly_count,
+            'anomaly_rate': anomaly_rate,
+            'anomaly_records': anomaly_records,
+            'date_range': f"{daily_data[self.date_column].min()} to {daily_data[self.date_column].max()}",
+            'avg_anomaly_score': np.mean(anomaly_scores[anomaly_labels == -1]) if anomaly_count > 0 else 0
+        }
+    
+    def get_anomaly_summary_by_date(self):
+        """
+        Get summary of anomalies grouped by date
+        """
+        if not self.anomaly_results:
+            return {}
+        
+        # Convert to DataFrame for easier analysis
+        anomaly_df = pd.DataFrame(self.anomaly_results)
+        
+        # Group by date
+        date_summary = {}
+        for date, group in anomaly_df.groupby(self.date_column):
+            date_str = date.strftime('%Y-%m-%d')
+            date_summary[date_str] = {
+                'date': date_str,
+                'total_anomalous_combinations': len(group),
+                'combinations': group['attribute_combination'].tolist(),
+                'total_anomalous_amount': group['GBPAmount_sum'].sum() if 'GBPAmount_sum' in group.columns else 0,
+                'avg_anomaly_score': group['anomaly_score'].mean()
+            }
+        
+        return date_summary
+    
+    def get_anomaly_summary_by_attribute(self):
+        """
+        Get summary of anomalies grouped by attribute combinations
+        """
+        return self.attribute_anomalies
+    
+    def generate_natural_language_summary(self):
+        """
+        Generate comprehensive natural language summary of attribute-based anomalies
+        """
+        if not self.attribute_anomalies:
+            return "No anomalies detected in any attribute combinations."
+        
+        narrative = []
+        
+        # Overall summary
+        total_combinations_analyzed = len(self.attribute_anomalies) + sum(1 for combo in self.attribute_anomalies.values() if combo['anomaly_count'] == 0)
+        anomalous_combinations = len(self.attribute_anomalies)
+        total_anomalous_days = sum(combo['anomaly_count'] for combo in self.attribute_anomalies.values())
+        
+        narrative.append("🔍 **Attribute-Based Anomaly Detection Summary**")
+        narrative.append(f"Found anomalies in {anomalous_combinations} attribute combinations out of analysis scope.")
+        narrative.append(f"Total anomalous time periods detected: {total_anomalous_days}")
+        
+        # Top anomalous attribute combinations
+        top_anomalies = sorted(self.attribute_anomalies.items(), 
+                             key=lambda x: x[1]['anomaly_count'], reverse=True)[:5]
+        
+        narrative.append(f"\n📊 **Top Anomalous Attribute Combinations:**")
+        for i, (combo_name, combo_data) in enumerate(top_anomalies, 1):
+            narrative.append(f"{i}. **{combo_name}**")
+            narrative.append(f"   • {combo_data['anomaly_count']} anomalous days out of {combo_data['total_days']} ({combo_data['anomaly_rate']:.1f}%)")
+            narrative.append(f"   • Period: {combo_data['date_range']}")
+            narrative.append(f"   • Average anomaly score: {combo_data['avg_anomaly_score']:.2f}")
+        
+        # Date-based analysis
+        date_summary = self.get_anomaly_summary_by_date()
+        if date_summary:
+            # Find dates with most anomalous combinations
+            top_dates = sorted(date_summary.items(), 
+                             key=lambda x: x[1]['total_anomalous_combinations'], reverse=True)[:3]
+            
+            narrative.append(f"\n📅 **Dates with Highest Anomaly Activity:**")
+            for date_str, date_data in top_dates:
+                narrative.append(f"• **{date_str}**: {date_data['total_anomalous_combinations']} anomalous combinations")
+                
+                # Show top combinations for this date
+                combinations = date_data['combinations'][:3]
+                for combo in combinations:
+                    narrative.append(f"  - {combo}")
+        
+        # Pattern analysis
+        narrative.append(f"\n🎯 **Key Patterns Identified:**")
+        
+        # Analyze which attributes appear most in anomalies
+        attribute_frequency = {}
+        for combo_name in self.attribute_anomalies.keys():
+            for part in combo_name.split(' | '):
+                attr_name = part.split('=')[0]
+                attr_value = part.split('=')[1]
+                if attr_name not in attribute_frequency:
+                    attribute_frequency[attr_name] = {}
+                if attr_value not in attribute_frequency[attr_name]:
+                    attribute_frequency[attr_name][attr_value] = 0
+                attribute_frequency[attr_name][attr_value] += self.attribute_anomalies[combo_name]['anomaly_count']
+        
+        for attr_name, values in attribute_frequency.items():
+            top_value = max(values.items(), key=lambda x: x[1])
+            narrative.append(f"• **{attr_name}**: '{top_value[0]}' shows highest anomaly frequency ({top_value[1]} anomalous days)")
+        
+        # Risk assessment
+        avg_anomaly_rate = np.mean([combo['anomaly_rate'] for combo in self.attribute_anomalies.values()])
+        
+        narrative.append(f"\n⚠️ **Risk Assessment:**")
+        if avg_anomaly_rate > 20:
+            narrative.append("🚨 **HIGH RISK**: Multiple attribute combinations showing high anomaly rates. Immediate investigation required.")
+        elif avg_anomaly_rate > 10:
+            narrative.append("⚡ **MEDIUM RISK**: Moderate anomaly activity across attribute combinations. Enhanced monitoring recommended.")
+        else:
+            narrative.append("✅ **LOW RISK**: Anomaly rates are within acceptable ranges for most combinations.")
+        
+        # Recommendations
+        narrative.append(f"\n🔧 **Actionable Recommendations:**")
+        narrative.append("• Focus investigation on the top anomalous attribute combinations listed above")
+        narrative.append("• Review business processes and data quality for the identified patterns")
+        narrative.append("• Consider implementing real-time monitoring for high-risk attribute combinations")
+        
+        if date_summary:
+            high_activity_dates = [d for d, data in date_summary.items() if data['total_anomalous_combinations'] > 1]
+            if high_activity_dates:
+                narrative.append(f"• Investigate system or market events on dates: {', '.join(high_activity_dates[:5])}")
+        
+        return "\n".join(narrative)
+    
+    def export_detailed_analysis(self, filename='attribute_anomaly_analysis.xlsx'):
+        """
+        Export comprehensive attribute-based anomaly analysis
+        """
+        if not self.anomaly_results:
+            print("No anomaly results to export.")
+            return
+        
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # All anomaly records
+                anomaly_df = pd.DataFrame(self.anomaly_results)
+                anomaly_df.to_excel(writer, sheet_name='All_Anomalies', index=False)
+                
+                # Summary by attribute combination
+                combo_summary = []
+                for combo_name, combo_data in self.attribute_anomalies.items():
+                    combo_summary.append({
+                        'Attribute_Combination': combo_name,
+                        'Total_Days': combo_data['total_days'],
+                        'Anomaly_Count': combo_data['anomaly_count'],
+                        'Anomaly_Rate_Percent': combo_data['anomaly_rate'],
+                        'Date_Range': combo_data['date_range'],
+                        'Avg_Anomaly_Score': combo_data['avg_anomaly_score']
+                    })
+                
+                combo_df = pd.DataFrame(combo_summary)
+                combo_df.to_excel(writer, sheet_name='Combination_Summary', index=False)
+                
+                # Summary by date
+                date_summary = self.get_anomaly_summary_by_date()
+                if date_summary:
+                    date_df = pd.DataFrame(date_summary.values())
+                    # Expand combinations into separate rows
+                    date_expanded = []
+                    for _, row in date_df.iterrows():
+                        for combo in row['combinations']:
+                            date_expanded.append({
+                                'Date': row['date'],
+                                'Attribute_Combination': combo,
+                                'Total_Combinations_This_Date': row['total_anomalous_combinations'],
+                                'Total_Amount': row['total_anomalous_amount'],
+                                'Avg_Anomaly_Score': row['avg_anomaly_score']
+                            })
+                    
+                    pd.DataFrame(date_expanded).to_excel(writer, sheet_name='Date_Analysis', index=False)
+            
+            print(f"Detailed analysis exported to {filename}")
+            
+        except Exception as e:
+            print(f"Error exporting to Excel: {e}")
+            # Fallback to CSV
+            pd.DataFrame(self.anomaly_results).to_csv(filename.replace('.xlsx', '_anomalies.csv'), index=False)
+
+# Example usage for financial LBS data with multiple attributes
+def main():
+    # SQL Server connection string
+    connection_string = """
+    DRIVER={ODBC Driver 17 for SQL Server};
+    SERVER=your_server;
+    DATABASE=your_database;
+    Trusted_Connection=yes;
+    """
+    
+    # Enhanced query with multiple categorical attributes
+    financial_query = """
+    SELECT 
+        BusinessDate,
+        LBSCategory,
+        LBSSubCategory,
+        Currency,
+        BusinessUnit,
+        BULevel1,
+        BULevel2,
+        BULevel3,
+        Region,
+        SUM(GBPIFRSBala) as GBPAmount,
+        SUM(LocalAmount) as LocalAmount,
+        COUNT(*) as TransactionCount,
+        AVG(GBPIFRSBala) as AvgGBPAmount
+    FROM financial_data_table
+    WHERE BusinessDate >= DATEADD(day, -90, GETDATE())
+        AND GBPIFRSBala IS NOT NULL
+        AND LBSCategory IS NOT NULL
+    GROUP BY BusinessDate, LBSCategory, LBSSubCategory, Currency, 
+             BusinessUnit, BULevel1, BULevel2, BULevel3, Region
+    ORDER BY BusinessDate DESC
+    """
+    
+    # Initialize detector
+    detector = AttributeBasedAnomalyDetector(connection_string)
+    
+    # Fetch data
+    print("🔄 Fetching financial data with multiple attributes...")
+    if detector.connect_and_fetch_data(financial_query, 'BusinessDate'):
+        
+        # Example 1: Analyze by LBS Category and Currency
+        print("\n" + "="*80)
+        print("ANALYSIS 1: LBS Category + Currency Combinations")
+        print("="*80)
+        
+        detector.detect_attribute_anomalies(
+            categorical_attributes=['LBSCategory', 'Currency'],
+            value_column='GBPAmount',
+            method='isolation_forest',
+            contamination=0.05,
+            min_observations=7  # At least 1 week of data
+        )
+        
+        print(detector.generate_natural_language_summary())
+        detector.export_detailed_analysis('lbs_currency_anomalies.xlsx')
+        
+        # Example 2: Analyze by Business Unit Hierarchy
+        print("\n" + "="*80)
+        print("ANALYSIS 2: Business Unit Hierarchy Anomalies")
+        print("="*80)
+        
+        detector.detect_attribute_anomalies(
+            categorical_attributes=['BULevel1', 'BULevel2'],
+            value_column='GBPAmount',
+            method='statistical',
+            contamination=0.08,
+            min_observations=10
+        )
+        
+        print(detector.generate_natural_language_summary())
+        detector.export_detailed_analysis('business_unit_anomalies.xlsx')
+        
+        # Example 3: Multi-dimensional analysis
+        print("\n" + "="*80)
+        print("ANALYSIS 3: Multi-Dimensional Analysis (LBS + Currency + Region)")
+        print("="*80)
+        
+        detector.detect_attribute_anomalies(
+            categorical_attributes=['LBSCategory', 'Currency', 'Region'],
+            value_column='GBPAmount',
+            method='isolation_forest',
+            contamination=0.1,
+            min_observations=5
+        )
+        
+        print(detector.generate_natural_language_summary())
+        detector.export_detailed_analysis('multi_dimensional_anomalies.xlsx')
+
+        # Display sample results
+        if detector.anomaly_results:
+            print(f"\n📋 **Sample Anomalous Records:**")
+            sample_df = pd.DataFrame(detector.anomaly_results[:10])
+            display_cols = ['BusinessDate', 'attribute_combination', 'GBPAmount_sum', 'anomaly_score']
+            available_cols = [col for col in display_cols if col in sample_df.columns]
+            print(sample_df[available_cols].to_string(index=False))
+        
+    else:
+        print("❌ Failed to connect or fetch data.")
+
+if __name__ == "__main__":
+    main()
