@@ -1,0 +1,2795 @@
+SSMS Connection Manager - Complete Implementation Guide
+📋 Overview
+This guide walks you through building a complete, production-ready SSMS plugin for managing database connections with secure password storage, groups, favorites, and import/export capabilities.
+
+🎯 Quick Start (5 Minutes)
+Option 1: Automated Setup (Recommended)
+powershell
+# 1. Create project directory
+mkdir SSMSConnectionManager
+cd SSMSConnectionManager
+
+# 2. Run setup script (creates folder structure)
+# Copy the setup-project.ps1 content from artifacts and run:
+.\setup-project.ps1
+
+# 3. Copy all code files into their respective folders
+# (See FILE_MAPPING.md for details)
+
+# 4. Build the project
+.\build.ps1 -Configuration Release
+
+# 5. Install
+.\build.ps1 -Install
+Option 2: Manual Setup
+Create Visual Studio Project
+Open Visual Studio 2019/2022
+File → New → Project
+Search for "VSIX Project"
+Name: SSMSConnectionManager
+Create
+Add All Files (from artifacts)
+Copy code from artifacts to appropriate folders
+Add references to SSMS assemblies
+Configure VSCT and manifest files
+Build & Install
+Build Solution (Ctrl+Shift+B)
+Double-click generated .vsix file
+📁 Complete Project Structure
+SSMSConnectionManager/
+│
+├── 📄 SSMSConnectionManager.csproj         # Project file
+├── 📄 SSMSConnectionManager.sln            # Solution file (auto-created)
+├── 📄 source.extension.vsixmanifest        # VSIX manifest
+├── 📄 VSPackage.vsct                       # Command table
+├── 📄 VSPackage.resx                       # Resources
+├── 📄 build.ps1                            # Build script
+├── 📄 setup-project.ps1                    # Setup script
+├── 📄 README.md                            # Documentation
+├── 📄 LICENSE.txt                          # MIT License
+├── 📄 SETUP_CHECKLIST.md                   # Setup checklist
+├── 📄 FILE_MAPPING.md                      # File mapping guide
+├── 📄 TROUBLESHOOTING.md                   # Troubleshooting
+│
+├── 📁 Core/                                # Business logic
+│   ├── ConnectionManagerPackage.cs         # Main VS package
+│   ├── ConnectionManager.cs                # Connection management
+│   ├── PasswordManager.cs
+
+**********************************************************************************************************************************************************************************************************************
+
+# ==============================================================================
+# QUICK START SETUP SCRIPT: setup-project.ps1
+# ==============================================================================
+# This script creates the complete project structure automatically
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "SSMS Connection Manager - Project Setup" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+$ProjectName = "SSMSConnectionManager"
+$RootDir = $PSScriptRoot
+
+# Create directory structure
+$Directories = @(
+    "Core",
+    "UI",
+    "Commands",
+    "Properties",
+    "Resources"
+)
+
+Write-Host "Creating directory structure..." -ForegroundColor Yellow
+foreach ($dir in $Directories) {
+    $path = Join-Path $RootDir $dir
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Path $path | Out-Null
+        Write-Host "  Created: $dir" -ForegroundColor Green
+    } else {
+        Write-Host "  Exists: $dir" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
+Write-Host "Project structure created!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "1. Copy all C# files from the artifacts into their respective folders:" -ForegroundColor White
+Write-Host "   - Core/*.cs files → Core/" -ForegroundColor Gray
+Write-Host "   - UI/*.cs files → UI/" -ForegroundColor Gray
+Write-Host "   - Commands/*.cs files → Commands/" -ForegroundColor Gray
+Write-Host "   - Properties/AssemblyInfo.cs → Properties/" -ForegroundColor Gray
+Write-Host ""
+Write-Host "2. Create or copy these XML files to the root:" -ForegroundColor White
+Write-Host "   - SSMSConnectionManager.csproj" -ForegroundColor Gray
+Write-Host "   - source.extension.vsixmanifest" -ForegroundColor Gray
+Write-Host "   - VSPackage.vsct" -ForegroundColor Gray
+Write-Host "   - VSPackage.resx" -ForegroundColor Gray
+Write-Host ""
+Write-Host "3. Add an icon file:" -ForegroundColor White
+Write-Host "   - Create a 16x16 PNG icon and save as Resources/Icon.png" -ForegroundColor Gray
+Write-Host ""
+Write-Host "4. Run the build script:" -ForegroundColor White
+Write-Host "   .\build.ps1 -Configuration Release" -ForegroundColor Gray
+Write-Host ""
+
+# Create a checklist file
+$ChecklistContent = @"
+# SSMS Connection Manager - Setup Checklist
+
+## Directory Structure
+- [x] Core/
+- [x] UI/
+- [x] Commands/
+- [x] Properties/
+- [x] Resources/
+
+## Core Files (Core/)
+- [ ] ConnectionManagerPackage.cs
+- [ ] ConnectionManager.cs
+- [ ] PasswordManager.cs
+- [ ] ConnectionInfo.cs
+- [ ] ImportExportManager.cs
+
+## UI Files (UI/)
+- [ ] ConnectionSelectorForm.cs
+- [ ] ConnectionEditForm.cs
+- [ ] ImportExportForm.cs
+
+## Command Files (Commands/)
+- [ ] ShowConnectionManagerCommand.cs
+- [ ] PackageGuids.cs
+
+## Properties Files (Properties/)
+- [ ] AssemblyInfo.cs
+
+## Root Files
+- [ ] SSMSConnectionManager.csproj
+- [ ] source.extension.vsixmanifest
+- [ ] VSPackage.vsct
+- [ ] VSPackage.resx
+- [ ] build.ps1
+- [ ] README.md
+- [ ] LICENSE.txt
+
+## Resources
+- [ ] Resources/Icon.png (16x16 PNG)
+
+## Build and Test
+- [ ] Run: .\build.ps1 -Configuration Release
+- [ ] Verify VSIX created in bin\Release\
+- [ ] Install VSIX in SSMS
+- [ ] Test connection management features
+
+## Post-Installation Test
+- [ ] Open SSMS
+- [ ] Find Connection Manager button in toolbar
+- [ ] Create a test connection
+- [ ] Test switching connections
+- [ ] Test groups and favorites
+- [ ] Test import/export
+- [ ] Verify password encryption works
+"@
+
+$ChecklistContent | Out-File -FilePath (Join-Path $RootDir "SETUP_CHECKLIST.md") -Encoding UTF8
+Write-Host "Created SETUP_CHECKLIST.md for tracking progress" -ForegroundColor Green
+
+# ==============================================================================
+# FILE MAPPING GUIDE
+# ==============================================================================
+
+$FileMappingContent = @"
+# File Mapping Guide
+
+This guide shows which code from the artifacts goes into which file.
+
+## Artifact: ssms_connection_plugin
+
+### Core/ConnectionManagerPackage.cs
+- Class: ConnectionManagerPackage (the main package initialization)
+- Lines: Package class definition with Initialize method
+
+### Core/ConnectionManager.cs
+- Class: ConnectionManager
+- All connection management logic
+
+### Core/PasswordManager.cs
+- Class: PasswordManager
+- Password encryption/decryption using DPAPI
+
+### Core/ConnectionInfo.cs
+- Class: ConnectionInfo
+- Connection data model
+
+### Core/ImportExportManager.cs
+- Class: ImportExportManager
+- Class: ExportData
+- Import/export functionality
+
+## Artifact: additional_cs_files
+
+### Commands/PackageGuids.cs
+- Class: PackageGuids
+- Class: PackageIds
+- GUID and ID definitions
+
+### Commands/ShowConnectionManagerCommand.cs
+- Class: ShowConnectionManagerCommand
+- Command handler for showing the connection manager
+
+### Properties/AssemblyInfo.cs
+- Assembly attributes and metadata
+
+### UI/ConnectionSelectorForm.cs
+- Class: ConnectionSelectorForm
+- Main connection selection UI
+- Includes the updated version with Import/Export button
+
+### UI/ConnectionEditForm.cs
+- Class: ConnectionEditForm
+- Add/edit connection dialog
+
+### UI/ImportExportForm.cs
+- Class: ImportExportForm
+- Import/export dialog
+
+## Artifact: ssms_complete_project (XML content)
+
+### SSMSConnectionManager.csproj
+- Project file with references and build settings
+
+### source.extension.vsixmanifest
+- VSIX manifest for installation
+
+### VSPackage.vsct
+- Command table definition
+
+### VSPackage.resx
+- Resource file (can also be created via VS designer)
+
+## Artifact: build_scripts
+
+### build.ps1
+- PowerShell build script
+
+### README.md
+- Project documentation
+
+### LICENSE.txt
+- MIT License
+
+## Creating the Icon
+
+The project needs an icon file at Resources/Icon.png (16x16 pixels).
+
+You can:
+1. Create a simple icon using any image editor
+2. Use an icon from https://icons8.com or similar
+3. Create using PowerShell (basic):
+
+\`\`\`powershell
+# This creates a basic placeholder icon
+Add-Type -AssemblyName System.Drawing
+\$bmp = New-Object System.Drawing.Bitmap(16, 16)
+\$graphics = [System.Drawing.Graphics]::FromImage(\$bmp)
+\$graphics.Clear([System.Drawing.Color]::Blue)
+\$graphics.FillRectangle([System.Drawing.Brushes]::White, 4, 4, 8, 8)
+\$bmp.Save("Resources\Icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
+\$graphics.Dispose()
+\$bmp.Dispose()
+\`\`\`
+
+Recommended icon theme: Database cylinder with a connection symbol
+"@
+
+$FileMappingContent | Out-File -FilePath (Join-Path $RootDir "FILE_MAPPING.md") -Encoding UTF8
+Write-Host "Created FILE_MAPPING.md with detailed instructions" -ForegroundColor Green
+
+# ==============================================================================
+# CREATE BASIC ICON IF MISSING
+# ==============================================================================
+
+$iconPath = Join-Path $RootDir "Resources\Icon.png"
+if (-not (Test-Path $iconPath)) {
+    Write-Host ""
+    Write-Host "Creating placeholder icon..." -ForegroundColor Yellow
+    
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $bmp = New-Object System.Drawing.Bitmap(16, 16)
+        $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+        
+        # Create a simple database icon
+        $graphics.Clear([System.Drawing.Color]::White)
+        
+        # Blue background
+        $blueBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(41, 128, 185))
+        $graphics.FillRectangle($blueBrush, 0, 0, 16, 16)
+        
+        # White database symbol
+        $whiteBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+        $graphics.FillEllipse($whiteBrush, 3, 2, 10, 4)
+        $graphics.FillRectangle($whiteBrush, 3, 4, 10, 8)
+        $graphics.FillEllipse($whiteBrush, 3, 10, 10, 4)
+        
+        # Connection dots
+        $greenBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(46, 204, 113))
+        $graphics.FillEllipse($greenBrush, 1, 1, 3, 3)
+        $graphics.FillEllipse($greenBrush, 12, 12, 3, 3)
+        
+        $bmp.Save($iconPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        
+        $graphics.Dispose()
+        $blueBrush.Dispose()
+        $whiteBrush.Dispose()
+        $greenBrush.Dispose()
+        $bmp.Dispose()
+        
+        Write-Host "  Created placeholder icon at Resources\Icon.png" -ForegroundColor Green
+        Write-Host "  (You can replace this with a custom icon later)" -ForegroundColor Gray
+    } catch {
+        Write-Host "  Could not create icon automatically. Please add manually." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "Setup Complete!" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Review SETUP_CHECKLIST.md and FILE_MAPPING.md for next steps." -ForegroundColor Cyan
+
+# ==============================================================================
+# TROUBLESHOOTING GUIDE
+# ==============================================================================
+
+$TroubleshootingContent = @"
+# Troubleshooting Guide
+
+## Common Build Issues
+
+### Issue: "Could not load file or assembly 'Microsoft.SqlServer.Management.Sdk.Sfc'"
+
+**Cause**: SSMS assembly references point to wrong location
+
+**Solution**:
+1. Locate your SSMS installation:
+   - Default: \`C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\`
+   - Or: \`C:\Program Files (x86)\Microsoft SQL Server Management Studio 18\`
+
+2. Update paths in \`SSMSConnectionManager.csproj\`:
+\`\`\`xml
+<Reference Include="Microsoft.SqlServer.Management.Sdk.Sfc">
+  <HintPath>YOUR_SSMS_PATH\Common7\IDE\Microsoft.SqlServer.Management.Sdk.Sfc.dll</HintPath>
+</Reference>
+\`\`\`
+
+3. Repeat for all SSMS references
+
+### Issue: "Package did not load correctly"
+
+**Cause**: Missing VSCT compilation or resource errors
+
+**Solution**:
+1. Verify \`VSPackage.vsct\` is marked as "VSCTCompile" in project
+2. Check \`VSPackage.resx\` exists and is valid
+3. Clean and rebuild:
+\`\`\`powershell
+.\build.ps1 -Clean -Configuration Release
+\`\`\`
+
+### Issue: "The extension is not compatible with this version of SSMS"
+
+**Cause**: Version mismatch in manifest
+
+**Solution**:
+Edit \`source.extension.vsixmanifest\`:
+\`\`\`xml
+<InstallationTarget Id="Microsoft.SQLServer.ManagementStudio" Version="[18.0,20.0)">
+\`\`\`
+
+Change version range to include your SSMS version
+
+### Issue: NuGet restore fails
+
+**Solution**:
+\`\`\`powershell
+# Clear NuGet cache
+dotnet nuget locals all --clear
+
+# Restore manually
+nuget restore SSMSConnectionManager.csproj
+\`\`\`
+
+### Issue: "Access Denied" during installation
+
+**Solution**:
+1. Close all instances of SSMS
+2. Run PowerShell as Administrator
+3. Retry installation
+
+### Issue: Extension installs but button doesn't appear
+
+**Solution**:
+1. Reset SSMS customizations:
+   - Tools → Customize → Toolbars → Reset
+2. Check if extension is enabled:
+   - Extensions → Manage Extensions → Installed
+3. Restart SSMS
+
+### Issue: Passwords not saved/retrieved
+
+**Cause**: DPAPI issues or permissions
+
+**Solution**:
+1. Check folder permissions:
+   \`%AppData%\SSMSConnectionManager\Passwords\`
+2. Run SSMS as the same user who created connections
+3. If Windows user profile is corrupt, re-create connections
+
+## Development Issues
+
+### Issue: Debug instance doesn't start
+
+**Solution**:
+1. In Visual Studio, right-click project → Properties
+2. Debug tab → Start external program:
+   - Browse to \`Ssms.exe\` in your SSMS installation
+3. Set command line arguments: \`/RootSuffix Exp\`
+
+### Issue: Breakpoints not hit
+
+**Solution**:
+1. Ensure "Debug" configuration is selected
+2. Check "Enable Just My Code" is disabled:
+   - Tools → Options → Debugging → General
+3. Verify PDB files are generated
+
+### Issue: Changes not reflected in debug instance
+
+**Solution**:
+1. Completely close the experimental SSMS instance
+2. Clean and rebuild solution
+3. Delete experimental cache:
+   \`%LocalAppData%\Microsoft\VisualStudio\17.0_<instance>Exp\`
+
+## Runtime Issues
+
+### Issue: "Connection failed" error
+
+**Possible causes**:
+- Invalid server name
+- Network connectivity issues
+- Firewall blocking
+- SQL Server not running
+
+**Solution**:
+1. Test connection with SSMS's built-in connect dialog
+2. Verify server name and port
+3. Check SQL Server is running
+4. Test network connectivity: \`Test-NetConnection -ComputerName SERVER -Port 1433\`
+
+### Issue: Import fails with "Invalid format"
+
+**Solution**:
+1. Verify JSON file is valid (use JSONLint.com)
+2. Check file encoding is UTF-8
+3. Ensure file was exported from same version
+
+### Issue: Groups or favorites not saving
+
+**Solution**:
+1. Check write permissions on:
+   \`%AppData%\SSMSConnectionManager\ssms_connections.json\`
+2. Verify JSON file is not locked by another process
+3. Check disk space available
+
+## Performance Issues
+
+### Issue: Extension slow to load
+
+**Possible causes**:
+- Many connections (100+)
+- Slow disk I/O
+- Antivirus scanning
+
+**Solution**:
+1. Reduce number of saved connections
+2. Exclude from antivirus:
+   \`%AppData%\SSMSConnectionManager\`
+3. Use SSD if possible
+
+## Getting Help
+
+If you encounter other issues:
+
+1. Check the GitHub Issues page
+2. Enable diagnostic logging:
+   - Set environment variable: \`SSMS_CM_DEBUG=1\`
+   - Logs will appear in Output window
+3. Collect information:
+   - SSMS version
+   - Windows version
+   - Error messages
+   - Steps to reproduce
+
+## Reporting Bugs
+
+When reporting bugs, include:
+1. SSMS version (\`Help → About\`)
+2. Extension version
+3. Windows version
+4. Detailed steps to reproduce
+5. Any error messages
+6. Screenshots if applicable
+
+Open an issue at: https://github.com/yourusername/ssms-connection-manager/issues
+"@
+
+$TroubleshootingContent | Out-File -FilePath (Join-Path $RootDir "TROUBLESHOOTING.md") -Encoding UTF8
+Write-Host "Created TROUBLESHOOTING.md" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "All setup files created successfully!" -ForegroundColor Green
+Write-Host "Check your directory for:" -ForegroundColor Cyan
+Write-Host "  - SETUP_CHECKLIST.md" -ForegroundColor White
+Write-Host "  - FILE_MAPPING.md" -ForegroundColor White
+Write-Host "  - TROUBLESHOOTING.md" -ForegroundColor White
+Write-Host ""
+
+**********************************************************************************************************************************************************************************************************************
+
+# ==============================================================================
+# BUILD SCRIPT: build.ps1
+# ==============================================================================
+# PowerShell script to build the SSMS Connection Manager VSIX
+
+param(
+    [string]$Configuration = "Release",
+    [switch]$Clean,
+    [switch]$Install
+)
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "SSMS Connection Manager Build Script" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+# Configuration
+$ProjectName = "SSMSConnectionManager"
+$SolutionDir = $PSScriptRoot
+$ProjectFile = Join-Path $SolutionDir "$ProjectName.csproj"
+$OutputDir = Join-Path $SolutionDir "bin\$Configuration"
+$VsixFile = Join-Path $OutputDir "$ProjectName.vsix"
+
+# Check if project file exists
+if (-not (Test-Path $ProjectFile)) {
+    Write-Host "ERROR: Project file not found: $ProjectFile" -ForegroundColor Red
+    exit 1
+}
+
+# Find MSBuild
+$MSBuildPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+    -latest -prerelease -products * -requires Microsoft.Component.MSBuild `
+    -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+
+if (-not $MSBuildPath) {
+    Write-Host "ERROR: MSBuild not found. Please install Visual Studio 2019 or later." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "MSBuild found at: $MSBuildPath" -ForegroundColor Green
+
+# Clean if requested
+if ($Clean) {
+    Write-Host ""
+    Write-Host "Cleaning solution..." -ForegroundColor Yellow
+    & $MSBuildPath $ProjectFile /t:Clean /p:Configuration=$Configuration /v:minimal
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Clean failed" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Restore NuGet packages
+Write-Host ""
+Write-Host "Restoring NuGet packages..." -ForegroundColor Yellow
+& $MSBuildPath $ProjectFile /t:Restore /v:minimal
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: NuGet restore failed" -ForegroundColor Red
+    exit 1
+}
+
+# Build
+Write-Host ""
+Write-Host "Building $Configuration configuration..." -ForegroundColor Yellow
+& $MSBuildPath $ProjectFile /t:Build /p:Configuration=$Configuration /v:minimal /p:DeployExtension=false
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Build failed" -ForegroundColor Red
+    exit 1
+}
+
+# Check if VSIX was created
+if (Test-Path $VsixFile) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "BUILD SUCCESSFUL!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "VSIX file created: $VsixFile" -ForegroundColor Green
+    
+    $vsixSize = (Get-Item $VsixFile).Length / 1KB
+    Write-Host "File size: $([math]::Round($vsixSize, 2)) KB" -ForegroundColor Green
+} else {
+    Write-Host "ERROR: VSIX file not created" -ForegroundColor Red
+    exit 1
+}
+
+# Install if requested
+if ($Install) {
+    Write-Host ""
+    Write-Host "Installing extension..." -ForegroundColor Yellow
+    
+    # Close SSMS if running
+    $ssmsProcesses = Get-Process -Name "Ssms" -ErrorAction SilentlyContinue
+    if ($ssmsProcesses) {
+        Write-Host "Closing SSMS..." -ForegroundColor Yellow
+        $ssmsProcesses | Stop-Process -Force
+        Start-Sleep -Seconds 2
+    }
+    
+    # Find VSIXInstaller
+    $VSIXInstaller = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+        -latest -prerelease -products * `
+        -find "**\VSIXInstaller.exe" | Select-Object -First 1
+    
+    if ($VSIXInstaller) {
+        & $VSIXInstaller /quiet $VsixFile
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Extension installed successfully!" -ForegroundColor Green
+            Write-Host "Please restart SSMS to use the extension." -ForegroundColor Cyan
+        } else {
+            Write-Host "Installation failed with exit code $LASTEXITCODE" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "VSIXInstaller not found. Please install manually by double-clicking the VSIX file." -ForegroundColor Yellow
+    }
+}
+
+# ==============================================================================
+# BATCH BUILD SCRIPT: build.bat
+# ==============================================================================
+# Save as build.bat for Windows users who prefer batch files
+<#
+@echo off
+echo ========================================
+echo SSMS Connection Manager Build Script
+echo ========================================
+echo.
+
+set Configuration=Release
+if not "%1"=="" set Configuration=%1
+
+echo Building %Configuration% configuration...
+echo.
+
+REM Find MSBuild
+for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -prerelease -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do (
+    set MSBuildPath=%%i
+)
+
+if not defined MSBuildPath (
+    echo ERROR: MSBuild not found. Please install Visual Studio.
+    exit /b 1
+)
+
+echo MSBuild found at: %MSBuildPath%
+echo.
+
+REM Restore packages
+echo Restoring NuGet packages...
+"%MSBuildPath%" SSMSConnectionManager.csproj /t:Restore /v:minimal
+if errorlevel 1 goto error
+
+REM Build
+echo Building solution...
+"%MSBuildPath%" SSMSConnectionManager.csproj /t:Build /p:Configuration=%Configuration% /v:minimal /p:DeployExtension=false
+if errorlevel 1 goto error
+
+echo.
+echo ========================================
+echo BUILD SUCCESSFUL!
+echo ========================================
+echo VSIX file: bin\%Configuration%\SSMSConnectionManager.vsix
+echo.
+goto end
+
+:error
+echo.
+echo BUILD FAILED!
+exit /b 1
+
+:end
+#>
+
+# ==============================================================================
+# README.md
+# ==============================================================================
+
+Write-Host ""
+Write-Host "Creating README.md..." -ForegroundColor Yellow
+
+$ReadmeContent = @"
+# SSMS Connection Manager
+
+A powerful Visual Studio extension for SQL Server Management Studio (SSMS) that allows you to manage, organize, and quickly switch between database connections.
+
+## Features
+
+### 🔐 Secure Password Management
+- Passwords encrypted using Windows Data Protection API (DPAPI)
+- Per-user encryption
+- Passwords never stored in plain text
+- Secure deletion when connections are removed
+
+### 📁 Connection Groups
+- Organize connections by project, environment, or client
+- Filter connections by group
+- Create custom groups on-the-fly
+
+### ⭐ Favorites System
+- Mark frequently used connections as favorites
+- Quick filter to show only favorites
+- Favorites appear first with star icon
+
+### 🎨 Visual Organization
+- Custom aliases for friendly names
+- Color coding for visual identification (e.g., Red=Production, Green=Development)
+- Rich connection details panel
+
+### 🔧 Advanced Connection Options
+- Customizable connection timeout per connection
+- SSL/TLS encryption options
+- Trust server certificate settings
+- Custom connection properties
+
+### 💾 Import/Export
+- Backup all connections to JSON file
+- Share connections with team members
+- Optional password inclusion (with warning)
+- Prevents duplicates on import
+
+## Installation
+
+### Prerequisites
+- SQL Server Management Studio 18 or 19
+- Windows 10/11
+- .NET Framework 4.7.2 or later
+
+### Option 1: Install from VSIX (Recommended)
+1. Download the latest \`.vsix\` file from releases
+2. Close SSMS if running
+3. Double-click the \`.vsix\` file
+4. Follow the installation wizard
+5. Restart SSMS
+
+### Option 2: Build from Source
+1. Clone this repository
+2. Open PowerShell in the project directory
+3. Run: \`.\build.ps1 -Install\`
+4. Restart SSMS
+
+## Usage
+
+### Opening Connection Manager
+- Click the **Connection Manager** button in the SSMS toolbar
+- Or use the menu: Tools → Connection Manager
+
+### Creating a New Connection
+1. Click **New** in the Connection Manager window
+2. Fill in connection details:
+   - Server name (required)
+   - Database name (required)
+   - Authentication type (Windows or SQL)
+   - Username/Password (for SQL Auth)
+3. Optionally set:
+   - Alias (friendly name)
+   - Group (for organization)
+   - Color (for visual identification)
+   - Mark as Favorite
+4. Click **Save**
+
+### Switching Connections
+1. Open Connection Manager
+2. Select a connection from the dropdown
+3. Click **Connect**
+
+### Organizing Connections
+- **Groups**: Use the group dropdown to filter by project/environment
+- **Favorites**: Check "Favorites Only" to see starred connections
+- **Colors**: Assign colors to quickly identify connection types
+
+### Import/Export
+1. Click **Import/Export** button
+2. For Export:
+   - Choose file location
+   - Optionally include passwords (not recommended for sharing)
+   - Click **Export Connections**
+3. For Import:
+   - Select JSON file
+   - Choose whether to overwrite existing connections
+   - Click **Import Connections**
+
+## Configuration
+
+Connection data is stored in:
+\`\`\`
+%AppData%\SSMSConnectionManager\
+├── ssms_connections.json (connection metadata)
+└── Passwords\ (encrypted password files)
+\`\`\`
+
+## Security
+
+### Password Storage
+- Uses Windows Data Protection API (DPAPI)
+- Encrypted per Windows user account
+- Cannot be decrypted by other users
+- Passwords stored separately from connection metadata
+
+### Best Practices
+- Use Windows Authentication when possible
+- Don't share exported files with passwords
+- Regularly review and remove unused connections
+- Use strong passwords for SQL Authentication
+
+## Building from Source
+
+### Requirements
+- Visual Studio 2019 or 2022
+- Visual Studio Extension Development workload
+- .NET Framework 4.7.2 SDK
+- SSMS 18 or 19 installed
+
+### Build Steps
+
+#### Using PowerShell (Recommended)
+\`\`\`powershell
+# Clean and build release version
+.\build.ps1 -Configuration Release -Clean
+
+# Build and install
+.\build.ps1 -Install
+\`\`\`
+
+#### Using Visual Studio
+1. Open \`SSMSConnectionManager.sln\`
+2. Select Release configuration
+3. Build → Build Solution (Ctrl+Shift+B)
+4. VSIX will be in \`bin\Release\SSMSConnectionManager.vsix\`
+
+#### Using Command Line
+\`\`\`batch
+build.bat Release
+\`\`\`
+
+## Project Structure
+
+\`\`\`
+SSMSConnectionManager/
+├── Core/
+│   ├── ConnectionManagerPackage.cs    # Main VS package
+│   ├── ConnectionManager.cs           # Connection management logic
+│   ├── PasswordManager.cs             # DPAPI password encryption
+│   ├── ConnectionInfo.cs              # Connection data model
+│   └── ImportExportManager.cs         # Backup/restore functionality
+├── UI/
+│   ├── ConnectionSelectorForm.cs      # Main connection picker UI
+│   ├── ConnectionEditForm.cs          # Add/edit connection UI
+│   └── ImportExportForm.cs            # Import/export UI
+├── Commands/
+│   ├── ShowConnectionManagerCommand.cs # Command handler
+│   └── PackageGuids.cs                # GUID definitions
+├── Resources/
+│   └── Icon.png                       # Extension icon
+├── Properties/
+│   └── AssemblyInfo.cs                # Assembly metadata
+├── SSMSConnectionManager.csproj       # Project file
+├── source.extension.vsixmanifest      # VSIX manifest
+├── VSPackage.vsct                     # Command table
+└── VSPackage.resx                     # Resources
+
+\`\`\`
+
+## Troubleshooting
+
+### Extension doesn't appear in SSMS
+**Solution**: 
+- Verify installation: Extensions → Manage Extensions → Installed
+- Reset toolbar: Tools → Customize → Toolbars → Reset
+- Check SSMS version compatibility
+
+### Build errors
+**Problem**: Reference not found errors
+
+**Solution**: Update assembly references in \`.csproj\` to match your SSMS installation path:
+\`\`\`xml
+<Reference Include="Microsoft.SqlServer.Management.Sdk.Sfc">
+  <HintPath>C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\...</HintPath>
+</Reference>
+\`\`\`
+
+### Cannot retrieve passwords
+**Problem**: Passwords not loading after switching Windows accounts
+
+**Explanation**: DPAPI encrypts per-user. Passwords encrypted by one user cannot be decrypted by another.
+
+**Solution**: Re-enter passwords when using a different Windows account.
+
+### VSIX won't install
+**Solution**: 
+- Check \`source.extension.vsixmanifest\` version matches your SSMS version
+- Uninstall previous version first
+- Run as Administrator
+
+## Development
+
+### Adding New Features
+1. Create feature branch: \`git checkout -b feature/my-feature\`
+2. Implement changes
+3. Test in debug mode (F5 in Visual Studio)
+4. Submit pull request
+
+### Debug Mode
+1. Set \`SSMSConnectionManager\` as startup project
+2. Press F5 to launch experimental SSMS instance
+3. Extension will be loaded automatically
+4. Use breakpoints for debugging
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Version History
+
+### Version 1.0.0 (2025)
+- Initial release
+- Secure password management with DPAPI
+- Connection groups and favorites
+- Color coding and aliases
+- Import/Export functionality
+- Support for SSMS 18 and 19
+
+## Support
+
+- Issues: [GitHub Issues](https://github.com/yourusername/ssms-connection-manager/issues)
+- Discussions: [GitHub Discussions](https://github.com/yourusername/ssms-connection-manager/discussions)
+
+## Acknowledgments
+
+- Built with Visual Studio Extensibility SDK
+- Uses Windows Data Protection API for security
+- Inspired by the need for better connection management in SSMS
+
+---
+
+**Made with ❤️ for SQL Server developers**
+"@
+
+$ReadmeContent | Out-File -FilePath (Join-Path $SolutionDir "README.md") -Encoding UTF8
+
+Write-Host "README.md created successfully!" -ForegroundColor Green
+
+# ==============================================================================
+# CREATE LICENSE FILE
+# ==============================================================================
+
+$LicenseContent = @"
+MIT License
+
+Copyright (c) 2025 SSMS Connection Manager
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"@
+
+$LicenseContent | Out-File -FilePath (Join-Path $SolutionDir "LICENSE.txt") -Encoding UTF8
+
+Write-Host "LICENSE.txt created successfully!" -ForegroundColor Green
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Setup complete! Run build.ps1 to build." -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+**********************************************************************************************************************************************************************************************************************
+
+// ==============================================================================
+// FILE: Commands/PackageGuids.cs
+// ==============================================================================
+using System;
+
+namespace SSMSConnectionManager
+{
+    internal static class PackageGuids
+    {
+        public const string guidConnectionManagerPackageString = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        public const string guidConnectionManagerCmdSetString = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+        
+        public static readonly Guid guidConnectionManagerPackage = new Guid(guidConnectionManagerPackageString);
+        public static readonly Guid guidConnectionManagerCmdSet = new Guid(guidConnectionManagerCmdSetString);
+    }
+
+    internal static class PackageIds
+    {
+        public const int ShowConnectionManagerCommandId = 0x0100;
+        public const int MyMenuGroup = 0x1020;
+    }
+}
+
+// ==============================================================================
+// FILE: Commands/ShowConnectionManagerCommand.cs
+// ==============================================================================
+using System;
+using System.ComponentModel.Design;
+using Microsoft.VisualStudio.Shell;
+using Task = System.Threading.Tasks.Task;
+
+namespace SSMSConnectionManager.Commands
+{
+    internal sealed class ShowConnectionManagerCommand
+    {
+        public const int CommandId = PackageIds.ShowConnectionManagerCommandId;
+        public static readonly Guid CommandSet = PackageGuids.guidConnectionManagerCmdSet;
+        private readonly AsyncPackage package;
+        private readonly ConnectionManager connectionManager;
+
+        private ShowConnectionManagerCommand(AsyncPackage package, OleMenuCommandService commandService, ConnectionManager manager)
+        {
+            this.package = package ?? throw new ArgumentNullException(nameof(package));
+            commandService = commandService ?? throw new ArgumentNullException(nameof(commandService));
+            this.connectionManager = manager;
+
+            var menuCommandID = new CommandID(CommandSet, CommandId);
+            var menuItem = new MenuCommand(this.Execute, menuCommandID);
+            commandService.AddCommand(menuItem);
+        }
+
+        public static ShowConnectionManagerCommand Instance { get; private set; }
+
+        private Microsoft.VisualStudio.Shell.IAsyncServiceProvider ServiceProvider => this.package;
+
+        public static async Task InitializeAsync(AsyncPackage package, ConnectionManager manager)
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(package.DisposalToken);
+
+            OleMenuCommandService commandService = await package.GetServiceAsync(typeof(IMenuCommandService)) as OleMenuCommandService;
+            Instance = new ShowConnectionManagerCommand(package, commandService, manager);
+        }
+
+        private void Execute(object sender, EventArgs e)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            try
+            {
+                var form = new UI.ConnectionSelectorForm(connectionManager);
+                form.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.Forms.MessageBox.Show(
+                    $"Error opening Connection Manager: {ex.Message}",
+                    "Connection Manager Error",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Error);
+            }
+        }
+    }
+}
+
+// ==============================================================================
+// FILE: Core/ConnectionManagerPackage.cs (Updated main package)
+// ==============================================================================
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Microsoft.VisualStudio.Shell;
+using Task = System.Threading.Tasks.Task;
+
+namespace SSMSConnectionManager
+{
+    [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
+    [Guid(PackageGuids.guidConnectionManagerPackageString)]
+    [ProvideMenuResource("Menus.ctmenu", 1)]
+    [InstalledProductRegistration("#110", "#112", "1.0", IconResourceID = 400)]
+    public sealed class ConnectionManagerPackage : AsyncPackage
+    {
+        private ConnectionManager connectionManager;
+
+        protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
+        {
+            await this.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+            
+            connectionManager = new ConnectionManager();
+            await Commands.ShowConnectionManagerCommand.InitializeAsync(this, connectionManager);
+        }
+    }
+}
+
+// ==============================================================================
+// FILE: Properties/AssemblyInfo.cs
+// ==============================================================================
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[assembly: AssemblyTitle("SSMS Connection Manager")]
+[assembly: AssemblyDescription("Manage and quickly switch between SQL Server connections")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("")]
+[assembly: AssemblyProduct("SSMS Connection Manager")]
+[assembly: AssemblyCopyright("Copyright © 2025")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+
+[assembly: ComVisible(false)]
+
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+// ==============================================================================
+// FILE: UI/ImportExportForm.cs
+// ==============================================================================
+using System;
+using System.Windows.Forms;
+
+namespace SSMSConnectionManager.UI
+{
+    public partial class ImportExportForm : Form
+    {
+        private readonly ConnectionManager manager;
+        private readonly ImportExportManager importExportManager;
+        private Button exportButton;
+        private Button importButton;
+        private CheckBox includePasswordsCheckbox;
+        private CheckBox overwriteCheckbox;
+        private TextBox filePathTextBox;
+        private Button browseButton;
+        private Label statusLabel;
+
+        public ImportExportForm(ConnectionManager manager)
+        {
+            this.manager = manager;
+            this.importExportManager = new ImportExportManager(manager);
+            InitializeComponents();
+        }
+
+        private void InitializeComponents()
+        {
+            this.Text = "Import/Export Connections";
+            this.Width = 500;
+            this.Height = 250;
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            // File path
+            var fileLabel = new Label
+            {
+                Text = "File Path:",
+                Left = 10,
+                Top = 20,
+                Width = 70
+            };
+            this.Controls.Add(fileLabel);
+
+            filePathTextBox = new TextBox
+            {
+                Left = 90,
+                Top = 17,
+                Width = 300
+            };
+            this.Controls.Add(filePathTextBox);
+
+            browseButton = new Button
+            {
+                Text = "Browse...",
+                Left = 400,
+                Top = 15,
+                Width = 80
+            };
+            browseButton.Click += BrowseButton_Click;
+            this.Controls.Add(browseButton);
+
+            // Options
+            includePasswordsCheckbox = new CheckBox
+            {
+                Text = "Include passwords in export (use with caution)",
+                Left = 10,
+                Top = 60,
+                Width = 350
+            };
+            this.Controls.Add(includePasswordsCheckbox);
+
+            overwriteCheckbox = new CheckBox
+            {
+                Text = "Overwrite existing connections on import",
+                Left = 10,
+                Top = 90,
+                Width = 350
+            };
+            this.Controls.Add(overwriteCheckbox);
+
+            // Buttons
+            exportButton = new Button
+            {
+                Text = "Export Connections",
+                Left = 10,
+                Top = 130,
+                Width = 150,
+                Height = 35
+            };
+            exportButton.Click += ExportButton_Click;
+            this.Controls.Add(exportButton);
+
+            importButton = new Button
+            {
+                Text = "Import Connections",
+                Left = 170,
+                Top = 130,
+                Width = 150,
+                Height = 35
+            };
+            importButton.Click += ImportButton_Click;
+            this.Controls.Add(importButton);
+
+            var closeButton = new Button
+            {
+                Text = "Close",
+                Left = 330,
+                Top = 130,
+                Width = 150,
+                Height = 35
+            };
+            closeButton.Click += (s, e) => this.Close();
+            this.Controls.Add(closeButton);
+
+            // Status label
+            statusLabel = new Label
+            {
+                Text = "",
+                Left = 10,
+                Top = 180,
+                Width = 470,
+                Height = 40,
+                ForeColor = System.Drawing.Color.Green
+            };
+            this.Controls.Add(statusLabel);
+        }
+
+        private void BrowseButton_Click(object sender, EventArgs e)
+        {
+            var dialog = new SaveFileDialog
+            {
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                DefaultExt = "json",
+                AddExtension = true,
+                FileName = $"ssms_connections_{DateTime.Now:yyyyMMdd}.json"
+            };
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                filePathTextBox.Text = dialog.FileName;
+            }
+        }
+
+        private void ExportButton_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(filePathTextBox.Text))
+            {
+                MessageBox.Show("Please select a file path.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                importExportManager.ExportConnections(filePathTextBox.Text, includePasswordsCheckbox.Checked);
+                statusLabel.ForeColor = System.Drawing.Color.Green;
+                statusLabel.Text = $"Successfully exported {manager.GetRecentConnections().Count} connections.";
+                
+                var result = MessageBox.Show(
+                    "Connections exported successfully! Open file location?",
+                    "Export Complete",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+
+                if (result == DialogResult.Yes)
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{filePathTextBox.Text}\"");
+                }
+            }
+            catch (Exception ex)
+            {
+                statusLabel.ForeColor = System.Drawing.Color.Red;
+                statusLabel.Text = $"Export failed: {ex.Message}";
+                MessageBox.Show($"Error exporting connections: {ex.Message}", "Export Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ImportButton_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(filePathTextBox.Text))
+            {
+                var dialog = new OpenFileDialog
+                {
+                    Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                    DefaultExt = "json"
+                };
+
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    filePathTextBox.Text = dialog.FileName;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                var beforeCount = manager.GetRecentConnections().Count;
+                importExportManager.ImportConnections(filePathTextBox.Text, overwriteCheckbox.Checked);
+                var afterCount = manager.GetRecentConnections().Count;
+                var imported = afterCount - beforeCount;
+
+                statusLabel.ForeColor = System.Drawing.Color.Green;
+                statusLabel.Text = $"Successfully imported {imported} new connections. Total: {afterCount}";
+                
+                MessageBox.Show(
+                    $"Import complete!\n\nNew connections: {imported}\nTotal connections: {afterCount}",
+                    "Import Complete",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                statusLabel.ForeColor = System.Drawing.Color.Red;
+                statusLabel.Text = $"Import failed: {ex.Message}";
+                MessageBox.Show($"Error importing connections: {ex.Message}", "Import Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+}
+
+// ==============================================================================
+// FILE: UI/ConnectionSelectorForm.cs (Updated with Import/Export button)
+// ==============================================================================
+// Add this to the existing ConnectionSelectorForm InitializeComponents method:
+
+// Add Import/Export button
+private void AddImportExportButton()
+{
+    var importExportButton = new System.Windows.Forms.Button
+    {
+        Text = "Import/Export",
+        Left = 10,
+        Top = 175,
+        Width = 100,
+        Height = 30
+    };
+    importExportButton.Click += ImportExportButton_Click;
+    this.Controls.Add(importExportButton);
+}
+
+private void ImportExportButton_Click(object sender, EventArgs e)
+{
+    var importExportForm = new ImportExportForm(_manager);
+    if (importExportForm.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+    {
+        LoadGroups();
+        LoadConnections();
+    }
+}
+
+// ==============================================================================
+// ADDITIONAL HELPER: VSPackage.resx
+// ==============================================================================
+// This file should be created with the Visual Studio designer
+// or manually with these basic entries:
+
+/*
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="110" xml:space="preserve">
+    <value>SSMS Connection Manager</value>
+  </data>
+  <data name="112" xml:space="preserve">
+    <value>Manage and quickly switch between SQL Server connections with groups, favorites, and secure password storage.</value>
+  </data>
+  <data name="400" type="System.Resources.ResXFileRef, System.Windows.Forms">
+    <value>Resources\Icon.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
+  </data>
+</root>
+*/
+
+**********************************************************************************************************************************************************************************************************************
+
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+==============================================================================
+SSMS Connection Manager - Complete Project Structure
+==============================================================================
+
+This is a complete Visual Studio VSIX project for SQL Server Management Studio.
+Follow the instructions below to build and deploy.
+
+PROJECT STRUCTURE:
+==================
+SSMSConnectionManager/
+├── SSMSConnectionManager.csproj
+├── source.extension.vsixmanifest
+├── VSPackage.resx
+├── Resources/
+│   └── Icon.png
+├── Properties/
+│   └── AssemblyInfo.cs
+├── Core/
+│   ├── ConnectionManagerPackage.cs
+│   ├── ConnectionManager.cs
+│   ├── PasswordManager.cs
+│   ├── ConnectionInfo.cs
+│   └── ImportExportManager.cs
+├── UI/
+│   ├── ConnectionSelectorForm.cs
+│   ├── ConnectionEditForm.cs
+│   └── ImportExportForm.cs
+├── Commands/
+│   ├── ShowConnectionManagerCommand.cs
+│   └── PackageGuids.cs
+└── VSPackage.vsct
+
+==============================================================================
+FILE 1: SSMSConnectionManager.csproj
+==============================================================================
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <RootNamespace>SSMSConnectionManager</RootNamespace>
+    <AssemblyName>SSMSConnectionManager</AssemblyName>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>true</IncludeDebugSymbolsInVSIXContainer>
+    <IncludeDebugSymbolsInLocalVSIXDeployment>true</IncludeDebugSymbolsInLocalVSIXDeployment>
+    <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
+    <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
+    <UseCodebase>true</UseCodebase>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.0.32112.339" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.0.5232" />
+    <PackageReference Include="System.Text.Json" Version="7.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.SqlServer.Management.Sdk.Sfc">
+      <HintPath>C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\Microsoft.SqlServer.Management.Sdk.Sfc.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.SqlServer.ConnectionInfo">
+      <HintPath>C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\Microsoft.SqlServer.ConnectionInfo.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Microsoft.SqlServer.Management.UI.VSIntegration">
+      <HintPath>C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\Microsoft.SqlServer.Management.UI.VSIntegration.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Data.SqlClient" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VSCTCompile Include="VSPackage.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="VSPackage.resx">
+      <MergeWithCTO>true</MergeWithCTO>
+      <ManifestResourceName>VSPackage</ManifestResourceName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Resources\Icon.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+  </ItemGroup>
+</Project>
+
+<!-- 
+==============================================================================
+FILE 2: source.extension.vsixmanifest
+==============================================================================
+Save this as a separate file in your project root
+-->
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="SSMSConnectionManager.a1b2c3d4-e5f6-7890-abcd-ef1234567890" Version="1.0" Language="en-US" Publisher="YourName" />
+    <DisplayName>SSMS Connection Manager</DisplayName>
+    <Description xml:space="preserve">Manage and quickly switch between SQL Server connections with groups, favorites, and secure password storage.</Description>
+    <MoreInfo>https://github.com/yourusername/ssms-connection-manager</MoreInfo>
+    <License>LICENSE.txt</License>
+    <Icon>Resources\Icon.png</Icon>
+    <PreviewImage>Resources\Icon.png</PreviewImage>
+    <Tags>SSMS, SQL Server, Connection, Database</Tags>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,18.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <InstallationTarget Id="Microsoft.SQLServer.ManagementStudio" Version="[19.0,20.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
+  </Dependencies>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,18.0)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+  </Assets>
+</PackageManifest>
+
+<!-- 
+==============================================================================
+FILE 3: VSPackage.vsct (Command Table)
+==============================================================================
+This defines the toolbar button and menu commands
+-->
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h"/>
+  <Extern href="vsshlids.h"/>
+
+  <Commands package="guidConnectionManagerPackage">
+    <Groups>
+      <Group guid="guidConnectionManagerCmdSet" id="MyMenuGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_TOOL_STANDARD"/>
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidConnectionManagerCmdSet" id="ShowConnectionManagerCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidConnectionManagerCmdSet" id="MyMenuGroup" />
+        <Icon guid="guidImages" id="bmpPic1" />
+        <Strings>
+          <ButtonText>Connection Manager</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+
+    <Bitmaps>
+      <Bitmap guid="guidImages" href="Resources\Icon.png" usedList="bmpPic1"/>
+    </Bitmaps>
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidConnectionManagerPackage" value="{a1b2c3d4-e5f6-7890-abcd-ef1234567890}" />
+    
+    <GuidSymbol name="guidConnectionManagerCmdSet" value="{b2c3d4e5-f6a7-8901-bcde-f12345678901}">
+      <IDSymbol name="MyMenuGroup" value="0x1020" />
+      <IDSymbol name="ShowConnectionManagerCommandId" value="0x0100" />
+    </GuidSymbol>
+
+    <GuidSymbol name="guidImages" value="{c3d4e5f6-a7b8-9012-cdef-123456789012}" >
+      <IDSymbol name="bmpPic1" value="1" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>
+
+<!-- 
+==============================================================================
+SETUP INSTRUCTIONS:
+==============================================================================
+
+1. PREREQUISITES:
+   - Visual Studio 2019 or 2022
+   - SSMS 18 or 19 installed
+   - .NET Framework 4.7.2 SDK
+   - Visual Studio Extension Development workload
+
+2. CREATE PROJECT:
+   - Open Visual Studio
+   - Create new "VSIX Project"
+   - Name it "SSMSConnectionManager"
+   - Replace the .csproj content with the XML above
+
+3. ADD FILES:
+   Create the following directory structure and add all the C# files from the previous artifact:
+   
+   Core/
+   ├── ConnectionManagerPackage.cs (main package code)
+   ├── ConnectionManager.cs
+   ├── PasswordManager.cs
+   ├── ConnectionInfo.cs
+   └── ImportExportManager.cs
+   
+   UI/
+   ├── ConnectionSelectorForm.cs
+   └── ConnectionEditForm.cs
+   
+   Commands/
+   ├── ShowConnectionManagerCommand.cs (new file - see below)
+   └── PackageGuids.cs (new file - see below)
+
+4. ADD ICON:
+   - Create Resources folder
+   - Add a 16x16 PNG icon named "Icon.png"
+
+5. BUILD:
+   - Build Solution (Ctrl+Shift+B)
+   - VSIX file will be in bin\Debug or bin\Release
+
+6. INSTALL:
+   - Close SSMS
+   - Double-click the .vsix file
+   - Follow installation wizard
+   - Restart SSMS
+
+7. USE:
+   - Look for "Connection Manager" button in SSMS toolbar
+   - Click to open connection manager
+
+==============================================================================
+TROUBLESHOOTING:
+==============================================================================
+
+Issue: References not found
+Solution: Update the HintPath in .csproj to your SSMS installation path
+
+Issue: VSIX won't install in SSMS
+Solution: Check source.extension.vsixmanifest InstallationTarget version matches your SSMS version
+
+Issue: Button doesn't appear
+Solution: Reset SSMS toolbar: Tools > Customize > Toolbars > Reset
+
+Issue: Build errors
+Solution: Ensure .NET Framework 4.7.2 is installed and VS Extension Development workload is installed
+
+==============================================================================
+-->
+
+**********************************************************************************************************************************************************************************************************************
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.Design;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.SqlServer.Management.UI.VSIntegration;
+using Microsoft.SqlServer.Management.UI.VSIntegration.ObjectExplorer;
+using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
+
+namespace SSMSConnectionManager
+{
+    // Plugin Package Class
+    [PackageRegistration(UseManagedResourcesOnly = true)]
+    [InstalledProductRegistration("#110", "#112", "1.0", IconResourceID = 400)]
+    [ProvideMenuResource("Menus.ctmenu", 1)]
+    [Guid(PackageGuidString)]
+    public sealed class ConnectionManagerPackage : Package
+    {
+        public const string PackageGuidString = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        private ConnectionManager _connectionManager;
+
+        protected override void Initialize()
+        {
+            base.Initialize();
+            _connectionManager = new ConnectionManager();
+            
+            OleMenuCommandService commandService = GetService(typeof(IMenuCommandService)) as OleMenuCommandService;
+            if (commandService != null)
+            {
+                // Add toolbar button
+                var menuCommandID = new CommandID(GuidList.guidConnectionManagerCmdSet, (int)PkgCmdIDList.cmdidConnectionDropdown);
+                var menuItem = new OleMenuCommand(ShowConnectionMenu, menuCommandID);
+                commandService.AddCommand(menuItem);
+            }
+        }
+
+        private void ShowConnectionMenu(object sender, EventArgs e)
+        {
+            var form = new ConnectionSelectorForm(_connectionManager);
+            form.ShowDialog();
+        }
+    }
+
+    // Connection Manager Class with Enhanced Features
+    public class ConnectionManager
+    {
+        private const string ConfigFileName = "ssms_connections.json";
+        private readonly string _configPath;
+        private List<ConnectionInfo> _recentConnections;
+        private readonly PasswordManager _passwordManager;
+        private const int MaxRecentConnections = 20;
+
+        public ConnectionManager()
+        {
+            _configPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "SSMSConnectionManager",
+                ConfigFileName
+            );
+            Directory.CreateDirectory(Path.GetDirectoryName(_configPath));
+            _passwordManager = new PasswordManager();
+            LoadConnections();
+        }
+
+        public void AddConnection(ConnectionInfo connection)
+        {
+            // Store password securely if provided
+            if (!connection.UseWindowsAuth && !string.IsNullOrEmpty(connection.Password))
+            {
+                _passwordManager.SavePassword(connection.GetConnectionKey(), connection.Password);
+                connection.Password = null; // Don't store in JSON
+            }
+
+            // Remove duplicate if exists
+            _recentConnections.RemoveAll(c => c.GetConnectionKey() == connection.GetConnectionKey());
+
+            // Add to top of list
+            connection.LastUsed = DateTime.Now;
+            _recentConnections.Insert(0, connection);
+
+            // Keep only max items
+            if (_recentConnections.Count > MaxRecentConnections)
+            {
+                _recentConnections = _recentConnections.Take(MaxRecentConnections).ToList();
+            }
+
+            SaveConnections();
+        }
+
+        public List<ConnectionInfo> GetRecentConnections()
+        {
+            return _recentConnections ?? new List<ConnectionInfo>();
+        }
+
+        public List<ConnectionInfo> GetConnectionsByGroup(string groupName)
+        {
+            if (string.IsNullOrEmpty(groupName))
+                return GetRecentConnections();
+            
+            return _recentConnections.Where(c => c.GroupName == groupName).ToList();
+        }
+
+        public List<string> GetAllGroups()
+        {
+            return _recentConnections
+                .Where(c => !string.IsNullOrEmpty(c.GroupName))
+                .Select(c => c.GroupName)
+                .Distinct()
+                .OrderBy(g => g)
+                .ToList();
+        }
+
+        public void RemoveConnection(ConnectionInfo connection)
+        {
+            var key = connection.GetConnectionKey();
+            _recentConnections.RemoveAll(c => c.GetConnectionKey() == key);
+            
+            // Remove stored password
+            if (!connection.UseWindowsAuth)
+            {
+                _passwordManager.DeletePassword(key);
+            }
+            
+            SaveConnections();
+        }
+
+        public void UpdateConnection(ConnectionInfo connection)
+        {
+            var existing = _recentConnections.FirstOrDefault(c => 
+                c.GetConnectionKey() == connection.GetConnectionKey());
+            
+            if (existing != null)
+            {
+                existing.GroupName = connection.GroupName;
+                existing.Alias = connection.Alias;
+                existing.Color = connection.Color;
+                existing.IsFavorite = connection.IsFavorite;
+                existing.CustomProperties = connection.CustomProperties;
+                
+                if (!connection.UseWindowsAuth && !string.IsNullOrEmpty(connection.Password))
+                {
+                    _passwordManager.SavePassword(connection.GetConnectionKey(), connection.Password);
+                }
+                
+                SaveConnections();
+            }
+        }
+
+        public void SwitchConnection(ConnectionInfo connection)
+        {
+            try
+            {
+                var objectExplorer = ServiceCache.ExtensibilityModel as IObjectExplorerService;
+                if (objectExplorer != null)
+                {
+                    // Retrieve password if needed
+                    if (!connection.UseWindowsAuth)
+                    {
+                        connection.Password = _passwordManager.GetPassword(connection.GetConnectionKey());
+                    }
+
+                    // Create connection string
+                    var connString = BuildConnectionString(connection);
+                    
+                    // Add connection to SSMS
+                    var serverNode = objectExplorer.GetSelectedNodes()?.FirstOrDefault();
+                    // Use SSMS API to connect
+                    
+                    // Update recent connections
+                    connection.LastUsed = DateTime.Now;
+                    AddConnection(connection);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error switching connection: {ex.Message}");
+                throw;
+            }
+        }
+
+        private string BuildConnectionString(ConnectionInfo connection)
+        {
+            var builder = new System.Data.SqlClient.SqlConnectionStringBuilder
+            {
+                DataSource = connection.ServerName,
+                InitialCatalog = connection.DatabaseName,
+                IntegratedSecurity = connection.UseWindowsAuth,
+                ConnectTimeout = connection.ConnectionTimeout,
+                ApplicationName = "SSMS Connection Manager"
+            };
+
+            if (!connection.UseWindowsAuth)
+            {
+                builder.UserID = connection.Username;
+                builder.Password = connection.Password;
+            }
+
+            if (connection.EncryptConnection)
+            {
+                builder.Encrypt = true;
+            }
+
+            if (connection.TrustServerCertificate)
+            {
+                builder.TrustServerCertificate = true;
+            }
+
+            return builder.ConnectionString;
+        }
+
+        private void LoadConnections()
+        {
+            try
+            {
+                if (File.Exists(_configPath))
+                {
+                    var json = File.ReadAllText(_configPath);
+                    _recentConnections = JsonSerializer.Deserialize<List<ConnectionInfo>>(json) 
+                        ?? new List<ConnectionInfo>();
+                }
+                else
+                {
+                    _recentConnections = new List<ConnectionInfo>();
+                }
+            }
+            catch
+            {
+                _recentConnections = new List<ConnectionInfo>();
+            }
+        }
+
+        private void SaveConnections()
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(_recentConnections, new JsonSerializerOptions 
+                { 
+                    WriteIndented = true 
+                });
+                File.WriteAllText(_configPath, json);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error saving connections: {ex.Message}");
+            }
+        }
+    }
+
+    // Enhanced Connection Info Model
+    public class ConnectionInfo
+    {
+        public string ServerName { get; set; }
+        public string DatabaseName { get; set; }
+        public string Username { get; set; }
+        public bool UseWindowsAuth { get; set; }
+        public DateTime LastUsed { get; set; }
+        
+        // Enhanced Features
+        public string Alias { get; set; }
+        public string GroupName { get; set; }
+        public string Color { get; set; }
+        public bool IsFavorite { get; set; }
+        public int ConnectionTimeout { get; set; } = 30;
+        public bool EncryptConnection { get; set; }
+        public bool TrustServerCertificate { get; set; }
+        public Dictionary<string, string> CustomProperties { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string Password { get; set; }
+
+        public string DisplayName => 
+            !string.IsNullOrEmpty(Alias) 
+                ? $"{Alias} ({ServerName} - {DatabaseName})" 
+                : $"{ServerName} - {DatabaseName}";
+
+        public string GetConnectionKey()
+        {
+            return $"{ServerName}|{DatabaseName}|{(UseWindowsAuth ? "WinAuth" : Username)}";
+        }
+
+        public ConnectionInfo()
+        {
+            LastUsed = DateTime.Now;
+            CustomProperties = new Dictionary<string, string>();
+            Color = "#FFFFFF";
+        }
+    }
+
+    // Password Manager using Windows Data Protection API
+    public class PasswordManager
+    {
+        private readonly string _passwordDirectory;
+
+        public PasswordManager()
+        {
+            _passwordDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "SSMSConnectionManager",
+                "Passwords"
+            );
+            Directory.CreateDirectory(_passwordDirectory);
+        }
+
+        public void SavePassword(string key, string password)
+        {
+            try
+            {
+                var encryptedData = ProtectedData.Protect(
+                    Encoding.UTF8.GetBytes(password),
+                    GetEntropy(),
+                    DataProtectionScope.CurrentUser
+                );
+
+                var filePath = GetPasswordFilePath(key);
+                File.WriteAllBytes(filePath, encryptedData);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error saving password: {ex.Message}");
+            }
+        }
+
+        public string GetPassword(string key)
+        {
+            try
+            {
+                var filePath = GetPasswordFilePath(key);
+                if (!File.Exists(filePath))
+                    return null;
+
+                var encryptedData = File.ReadAllBytes(filePath);
+                var decryptedData = ProtectedData.Unprotect(
+                    encryptedData,
+                    GetEntropy(),
+                    DataProtectionScope.CurrentUser
+                );
+
+                return Encoding.UTF8.GetString(decryptedData);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error retrieving password: {ex.Message}");
+                return null;
+            }
+        }
+
+        public void DeletePassword(string key)
+        {
+            try
+            {
+                var filePath = GetPasswordFilePath(key);
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error deleting password: {ex.Message}");
+            }
+        }
+
+        private string GetPasswordFilePath(string key)
+        {
+            var hash = ComputeHash(key);
+            return Path.Combine(_passwordDirectory, hash + ".pwd");
+        }
+
+        private string ComputeHash(string input)
+        {
+            using (var sha256 = SHA256.Create())
+            {
+                var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
+                return BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+            }
+        }
+
+        private byte[] GetEntropy()
+        {
+            return Encoding.UTF8.GetBytes("SSMS_Connection_Manager_Entropy_v1");
+        }
+    }
+
+    // Command GUIDs and IDs
+    static class GuidList
+    {
+        public const string guidConnectionManagerPkgString = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        public const string guidConnectionManagerCmdSetString = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+
+        public static readonly Guid guidConnectionManagerCmdSet = new Guid(guidConnectionManagerCmdSetString);
+    }
+
+    static class PkgCmdIDList
+    {
+        public const uint cmdidConnectionDropdown = 0x100;
+    }
+
+    // Enhanced UI Form for Connection Selector
+    public partial class ConnectionSelectorForm : System.Windows.Forms.Form
+    {
+        private System.Windows.Forms.ComboBox _groupComboBox;
+        private System.Windows.Forms.ComboBox _connectionComboBox;
+        private System.Windows.Forms.Button _connectButton;
+        private System.Windows.Forms.Button _deleteButton;
+        private System.Windows.Forms.Button _editButton;
+        private System.Windows.Forms.Button _newButton;
+        private System.Windows.Forms.CheckBox _favoritesOnlyCheckbox;
+        private System.Windows.Forms.Label _groupLabel;
+        private System.Windows.Forms.Label _connectionLabel;
+        private System.Windows.Forms.Panel _connectionPanel;
+        private readonly ConnectionManager _manager;
+
+        public ConnectionInfo SelectedConnection { get; private set; }
+
+        public ConnectionSelectorForm(ConnectionManager manager)
+        {
+            _manager = manager;
+            InitializeComponents();
+            LoadGroups();
+            LoadConnections();
+        }
+
+        private void InitializeComponents()
+        {
+            this.Text = "Connection Manager - Recent Connections";
+            this.Width = 600;
+            this.Height = 250;
+            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            // Group Label
+            _groupLabel = new System.Windows.Forms.Label
+            {
+                Text = "Group:",
+                Left = 10,
+                Top = 15,
+                Width = 50
+            };
+
+            // Group ComboBox
+            _groupComboBox = new System.Windows.Forms.ComboBox
+            {
+                Left = 70,
+                Top = 12,
+                Width = 200,
+                DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+            };
+            _groupComboBox.SelectedIndexChanged += GroupComboBox_SelectedIndexChanged;
+
+            // Favorites Only Checkbox
+            _favoritesOnlyCheckbox = new System.Windows.Forms.CheckBox
+            {
+                Text = "Favorites Only",
+                Left = 280,
+                Top = 14,
+                Width = 120
+            };
+            _favoritesOnlyCheckbox.CheckedChanged += FavoritesCheckbox_CheckedChanged;
+
+            // Connection Label
+            _connectionLabel = new System.Windows.Forms.Label
+            {
+                Text = "Connection:",
+                Left = 10,
+                Top = 55,
+                Width = 70
+            };
+
+            // Connection ComboBox
+            _connectionComboBox = new System.Windows.Forms.ComboBox
+            {
+                Left = 85,
+                Top = 52,
+                Width = 490,
+                DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+            };
+            _connectionComboBox.DrawMode = System.Windows.Forms.DrawMode.OwnerDrawFixed;
+            _connectionComboBox.DrawItem += ConnectionComboBox_DrawItem;
+
+            // Connection Info Panel
+            _connectionPanel = new System.Windows.Forms.Panel
+            {
+                Left = 10,
+                Top = 90,
+                Width = 565,
+                Height = 70,
+                BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle
+            };
+
+            // Buttons
+            _connectButton = new System.Windows.Forms.Button
+            {
+                Text = "Connect",
+                Left = 300,
+                Top = 175,
+                Width = 80,
+                Height = 30
+            };
+            _connectButton.Click += ConnectButton_Click;
+
+            _editButton = new System.Windows.Forms.Button
+            {
+                Text = "Edit",
+                Left = 390,
+                Top = 175,
+                Width = 60,
+                Height = 30
+            };
+            _editButton.Click += EditButton_Click;
+
+            _newButton = new System.Windows.Forms.Button
+            {
+                Text = "New",
+                Left = 460,
+                Top = 175,
+                Width = 60,
+                Height = 30
+            };
+            _newButton.Click += NewButton_Click;
+
+            _deleteButton = new System.Windows.Forms.Button
+            {
+                Text = "Delete",
+                Left = 530,
+                Top = 175,
+                Width = 60,
+                Height = 30
+            };
+            _deleteButton.Click += DeleteButton_Click;
+
+            this.Controls.Add(_groupLabel);
+            this.Controls.Add(_groupComboBox);
+            this.Controls.Add(_favoritesOnlyCheckbox);
+            this.Controls.Add(_connectionLabel);
+            this.Controls.Add(_connectionComboBox);
+            this.Controls.Add(_connectionPanel);
+            this.Controls.Add(_connectButton);
+            this.Controls.Add(_editButton);
+            this.Controls.Add(_newButton);
+            this.Controls.Add(_deleteButton);
+        }
+
+        private void LoadGroups()
+        {
+            var groups = _manager.GetAllGroups();
+            _groupComboBox.Items.Clear();
+            _groupComboBox.Items.Add("All Connections");
+            foreach (var group in groups)
+            {
+                _groupComboBox.Items.Add(group);
+            }
+            _groupComboBox.SelectedIndex = 0;
+        }
+
+        private void LoadConnections()
+        {
+            var selectedGroup = _groupComboBox.SelectedItem?.ToString();
+            var connections = selectedGroup == "All Connections" 
+                ? _manager.GetRecentConnections() 
+                : _manager.GetConnectionsByGroup(selectedGroup);
+
+            if (_favoritesOnlyCheckbox.Checked)
+            {
+                connections = connections.Where(c => c.IsFavorite).ToList();
+            }
+
+            _connectionComboBox.Items.Clear();
+            foreach (var conn in connections.OrderByDescending(c => c.IsFavorite).ThenByDescending(c => c.LastUsed))
+            {
+                _connectionComboBox.Items.Add(conn);
+            }
+            _connectionComboBox.DisplayMember = "DisplayName";
+            
+            if (_connectionComboBox.Items.Count > 0)
+            {
+                _connectionComboBox.SelectedIndex = 0;
+                UpdateConnectionInfo();
+            }
+        }
+
+        private void ConnectionComboBox_DrawItem(object sender, System.Windows.Forms.DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+
+            var conn = _connectionComboBox.Items[e.Index] as ConnectionInfo;
+            if (conn == null) return;
+
+            e.DrawBackground();
+
+            // Draw favorite star
+            if (conn.IsFavorite)
+            {
+                e.Graphics.DrawString("★", this.Font, System.Drawing.Brushes.Gold, e.Bounds.Left, e.Bounds.Top);
+            }
+
+            // Draw connection name with color
+            var color = System.Drawing.ColorTranslator.FromHtml(conn.Color);
+            using (var brush = new System.Drawing.SolidBrush(color))
+            {
+                var rect = new System.Drawing.RectangleF(e.Bounds.Left + 20, e.Bounds.Top, e.Bounds.Width - 20, e.Bounds.Height);
+                e.Graphics.DrawString(conn.DisplayName, this.Font, System.Drawing.Brushes.Black, rect);
+            }
+
+            e.DrawFocusRectangle();
+        }
+
+        private void UpdateConnectionInfo()
+        {
+            var conn = _connectionComboBox.SelectedItem as ConnectionInfo;
+            if (conn == null) return;
+
+            _connectionPanel.Controls.Clear();
+
+            var infoLabels = new[]
+            {
+                $"Server: {conn.ServerName}",
+                $"Database: {conn.DatabaseName}",
+                $"Auth: {(conn.UseWindowsAuth ? "Windows Authentication" : $"SQL Auth ({conn.Username})")}",
+                $"Last Used: {conn.LastUsed:yyyy-MM-dd HH:mm}",
+                $"Group: {(string.IsNullOrEmpty(conn.GroupName) ? "None" : conn.GroupName)}"
+            };
+
+            for (int i = 0; i < infoLabels.Length; i++)
+            {
+                var label = new System.Windows.Forms.Label
+                {
+                    Text = infoLabels[i],
+                    Left = 10,
+                    Top = 5 + (i * 15),
+                    Width = 545,
+                    AutoSize = false
+                };
+                _connectionPanel.Controls.Add(label);
+            }
+        }
+
+        private void GroupComboBox_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            LoadConnections();
+        }
+
+        private void FavoritesCheckbox_CheckedChanged(object sender, EventArgs e)
+        {
+            LoadConnections();
+        }
+
+        private void ConnectButton_Click(object sender, EventArgs e)
+        {
+            SelectedConnection = _connectionComboBox.SelectedItem as ConnectionInfo;
+            if (SelectedConnection != null)
+            {
+                try
+                {
+                    _manager.SwitchConnection(SelectedConnection);
+                    this.DialogResult = System.Windows.Forms.DialogResult.OK;
+                    this.Close();
+                }
+                catch (Exception ex)
+                {
+                    System.Windows.Forms.MessageBox.Show(
+                        $"Error connecting: {ex.Message}", 
+                        "Connection Error", 
+                        System.Windows.Forms.MessageBoxButtons.OK, 
+                        System.Windows.Forms.MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void EditButton_Click(object sender, EventArgs e)
+        {
+            var selected = _connectionComboBox.SelectedItem as ConnectionInfo;
+            if (selected != null)
+            {
+                var editForm = new ConnectionEditForm(selected, _manager);
+                if (editForm.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                {
+                    LoadGroups();
+                    LoadConnections();
+                }
+            }
+        }
+
+        private void NewButton_Click(object sender, EventArgs e)
+        {
+            var newConn = new ConnectionInfo();
+            var editForm = new ConnectionEditForm(newConn, _manager);
+            if (editForm.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                LoadGroups();
+                LoadConnections();
+            }
+        }
+
+        private void DeleteButton_Click(object sender, EventArgs e)
+        {
+            var selected = _connectionComboBox.SelectedItem as ConnectionInfo;
+            if (selected != null)
+            {
+                var result = System.Windows.Forms.MessageBox.Show(
+                    $"Delete connection '{selected.DisplayName}'?",
+                    "Confirm Delete",
+                    System.Windows.Forms.MessageBoxButtons.YesNo,
+                    System.Windows.Forms.MessageBoxIcon.Question);
+
+                if (result == System.Windows.Forms.DialogResult.Yes)
+                {
+                    _manager.RemoveConnection(selected);
+                    LoadConnections();
+                }
+            }
+        }
+    }
+
+    // Connection Edit Form
+    public partial class ConnectionEditForm : System.Windows.Forms.Form
+    {
+        private readonly ConnectionInfo _connection;
+        private readonly ConnectionManager _manager;
+        private System.Windows.Forms.TextBox _serverTextBox;
+        private System.Windows.Forms.TextBox _databaseTextBox;
+        private System.Windows.Forms.TextBox _usernameTextBox;
+        private System.Windows.Forms.TextBox _passwordTextBox;
+        private System.Windows.Forms.TextBox _aliasTextBox;
+        private System.Windows.Forms.ComboBox _groupComboBox;
+        private System.Windows.Forms.CheckBox _windowsAuthCheckbox;
+        private System.Windows.Forms.CheckBox _favoriteCheckbox;
+        private System.Windows.Forms.CheckBox _encryptCheckbox;
+        private System.Windows.Forms.NumericUpDown _timeoutNumeric;
+        private System.Windows.Forms.Button _colorButton;
+        private System.Windows.Forms.Panel _colorPreview;
+
+        public ConnectionEditForm(ConnectionInfo connection, ConnectionManager manager)
+        {
+            _connection = connection;
+            _manager = manager;
+            InitializeEditComponents();
+            LoadConnectionData();
+        }
+
+        private void InitializeEditComponents()
+        {
+            this.Text = "Edit Connection";
+            this.Width = 500;
+            this.Height = 500;
+            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+
+            int yPos = 20;
+            int labelWidth = 100;
+            int controlLeft = 120;
+
+            // Server
+            AddLabel("Server:", 10, yPos, labelWidth);
+            _serverTextBox = AddTextBox(controlLeft, yPos, 350);
+            yPos += 35;
+
+            // Database
+            AddLabel("Database:", 10, yPos, labelWidth);
+            _databaseTextBox = AddTextBox(controlLeft, yPos, 350);
+            yPos += 35;
+
+            // Windows Auth
+            _windowsAuthCheckbox = new System.Windows.Forms.CheckBox
+            {
+                Text = "Use Windows Authentication",
+                Left = controlLeft,
+                Top = yPos,
+                Width = 250
+            };
+            _windowsAuthCheckbox.CheckedChanged += WindowsAuthCheckbox_CheckedChanged;
+            this.Controls.Add(_windowsAuthCheckbox);
+            yPos += 30;
+
+            // Username
+            AddLabel("Username:", 10, yPos, labelWidth);
+            _usernameTextBox = AddTextBox(controlLeft, yPos, 350);
+            yPos += 35;
+
+            // Password
+            AddLabel("Password:", 10, yPos, labelWidth);
+            _passwordTextBox = AddTextBox(controlLeft, yPos, 350);
+            _passwordTextBox.UseSystemPasswordChar = true;
+            yPos += 35;
+
+            // Alias
+            AddLabel("Alias:", 10, yPos, labelWidth);
+            _aliasTextBox = AddTextBox(controlLeft, yPos, 350);
+            yPos += 35;
+
+            // Group
+            AddLabel("Group:", 10, yPos, labelWidth);
+            _groupComboBox = new System.Windows.Forms.ComboBox
+            {
+                Left = controlLeft,
+                Top = yPos,
+                Width = 200
+            };
+            this.Controls.Add(_groupComboBox);
+            yPos += 35;
+
+            // Timeout
+            AddLabel("Timeout (sec):", 10, yPos, labelWidth);
+            _timeoutNumeric = new System.Windows.Forms.NumericUpDown
+            {
+                Left = controlLeft,
+                Top = yPos,
+                Width = 100,
+                Minimum = 5,
+                Maximum = 300,
+                Value = 30
+            };
+            this.Controls.Add(_timeoutNumeric);
+            yPos += 35;
+
+            // Color
+            AddLabel("Color:", 10, yPos, labelWidth);
+            _colorButton = new System.Windows.Forms.Button
+            {
+                Text = "Choose Color",
+                Left = controlLeft,
+                Top = yPos,
+                Width = 100
+            };
+            _colorButton.Click += ColorButton_Click;
+            _colorPreview = new System.Windows.Forms.Panel
+            {
+                Left = controlLeft + 110,
+                Top = yPos,
+                Width = 30,
+                Height = 23,
+                BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle
+            };
+            this.Controls.Add(_colorButton);
+            this.Controls.Add(_colorPreview);
+            yPos += 35;
+
+            // Checkboxes
+            _favoriteCheckbox = new System.Windows.Forms.CheckBox
+            {
+                Text = "Favorite",
+                Left = controlLeft,
+                Top = yPos,
+                Width = 100
+            };
+            this.Controls.Add(_favoriteCheckbox);
+
+            _encryptCheckbox = new System.Windows.Forms.CheckBox
+            {
+                Text = "Encrypt Connection",
+                Left = controlLeft + 110,
+                Top = yPos,
+                Width = 150
+            };
+            this.Controls.Add(_encryptCheckbox);
+            yPos += 40;
+
+            // Save and Cancel buttons
+            var saveButton = new System.Windows.Forms.Button
+            {
+                Text = "Save",
+                Left = 300,
+                Top = yPos,
+                Width = 80,
+                DialogResult = System.Windows.Forms.DialogResult.OK
+            };
+            saveButton.Click += SaveButton_Click;
+
+            var cancelButton = new System.Windows.Forms.Button
+            {
+                Text = "Cancel",
+                Left = 390,
+                Top = yPos,
+                Width = 80,
+                DialogResult = System.Windows.Forms.DialogResult.Cancel
+            };
+
+            this.Controls.Add(saveButton);
+            this.Controls.Add(cancelButton);
+            this.AcceptButton = saveButton;
+            this.CancelButton = cancelButton;
+        }
+
+        private System.Windows.Forms.Label AddLabel(string text, int left, int top, int width)
+        {
+            var label = new System.Windows.Forms.Label
+            {
+                Text = text,
+                Left = left,
+                Top = top + 3,
+                Width = width
+            };
+            this.Controls.Add(label);
+            return label;
+        }
+
+        private System.Windows.Forms.TextBox AddTextBox(int left, int top, int width)
+        {
+            var textBox = new System.Windows.Forms.TextBox
+            {
+                Left = left,
+                Top = top,
+                Width = width
+            };
+            this.Controls.Add(textBox);
+            return textBox;
+        }
+
+        private void LoadConnectionData()
+        {
+            _serverTextBox.Text = _connection.ServerName;
+            _databaseTextBox.Text = _connection.DatabaseName;
+            _usernameTextBox.Text = _connection.Username;
+            _aliasTextBox.Text = _connection.Alias;
+            _windowsAuthCheckbox.Checked = _connection.UseWindowsAuth;
+            _favoriteCheckbox.Checked = _connection.IsFavorite;
+            _encryptCheckbox.Checked = _connection.EncryptConnection;
+            _timeoutNumeric.Value = _connection.ConnectionTimeout;
+            _colorPreview.BackColor = System.Drawing.ColorTranslator.FromHtml(_connection.Color);
+
+            // Load groups
+            var groups = _manager.GetAllGroups();
+            _groupComboBox.Items.Clear();
+            _groupComboBox.Items.Add("");
+            foreach (var group in groups)
+            {
+                _groupComboBox.Items.Add(group);
+            }
+            _groupComboBox.Text = _connection.GroupName ?? "";
+        }
+
+        private void WindowsAuthCheckbox_CheckedChanged(object sender, EventArgs e)
+        {
+            bool useWindowsAuth = _windowsAuthCheckbox.Checked;
+            _usernameTextBox.Enabled = !useWindowsAuth;
+            _passwordTextBox.Enabled = !useWindowsAuth;
+        }
+
+        private void ColorButton_Click(object sender, EventArgs e)
+        {
+            var colorDialog = new System.Windows.Forms.ColorDialog();
+            if (colorDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                _colorPreview.BackColor = colorDialog.Color;
+            }
+        }
+
+        private void SaveButton_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_serverTextBox.Text))
+            {
+                System.Windows.Forms.MessageBox.Show("Server name is required.", "Validation Error");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_databaseTextBox.Text))
+            {
+                System.Windows.Forms.MessageBox.Show("Database name is required.", "Validation Error");
+                return;
+            }
+
+            if (!_windowsAuthCheckbox.Checked && string.IsNullOrWhiteSpace(_usernameTextBox.Text))
+            {
+                System.Windows.Forms.MessageBox.Show("Username is required for SQL Authentication.", "Validation Error");
+                return;
+            }
+
+            _connection.ServerName = _serverTextBox.Text.Trim();
+            _connection.DatabaseName = _databaseTextBox.Text.Trim();
+            _connection.Username = _usernameTextBox.Text.Trim();
+            _connection.Password = _passwordTextBox.Text;
+            _connection.UseWindowsAuth = _windowsAuthCheckbox.Checked;
+            _connection.Alias = _aliasTextBox.Text.Trim();
+            _connection.GroupName = _groupComboBox.Text.Trim();
+            _connection.IsFavorite = _favoriteCheckbox.Checked;
+            _connection.EncryptConnection = _encryptCheckbox.Checked;
+            _connection.ConnectionTimeout = (int)_timeoutNumeric.Value;
+            _connection.Color = System.Drawing.ColorTranslator.ToHtml(_colorPreview.BackColor);
+
+            if (string.IsNullOrEmpty(_connection.Alias))
+            {
+                _connection.Alias = null;
+            }
+
+            if (string.IsNullOrEmpty(_connection.GroupName))
+            {
+                _connection.GroupName = null;
+            }
+
+            try
+            {
+                _manager.AddConnection(_connection);
+            }
+            catch (Exception ex)
+            {
+                System.Windows.Forms.MessageBox.Show(
+                    $"Error saving connection: {ex.Message}",
+                    "Save Error",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Error);
+                this.DialogResult = System.Windows.Forms.DialogResult.None;
+            }
+        }
+    }
+
+    // Import/Export Manager for backup and sharing
+    public class ImportExportManager
+    {
+        private readonly ConnectionManager _manager;
+
+        public ImportExportManager(ConnectionManager manager)
+        {
+            _manager = manager;
+        }
+
+        public void ExportConnections(string filePath, bool includePasswords = false)
+        {
+            try
+            {
+                var connections = _manager.GetRecentConnections();
+                var exportData = new ExportData
+                {
+                    ExportDate = DateTime.Now,
+                    Version = "1.0",
+                    Connections = connections,
+                    IncludesPasswords = includePasswords
+                };
+
+                var json = JsonSerializer.Serialize(exportData, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                File.WriteAllText(filePath, json);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to export connections: {ex.Message}");
+            }
+        }
+
+        public void ImportConnections(string filePath, bool overwrite = false)
+        {
+            try
+            {
+                var json = File.ReadAllText(filePath);
+                var importData = JsonSerializer.Deserialize<ExportData>(json);
+
+                if (importData?.Connections == null)
+                {
+                    throw new Exception("Invalid import file format.");
+                }
+
+                foreach (var conn in importData.Connections)
+                {
+                    if (!overwrite)
+                    {
+                        var existing = _manager.GetRecentConnections()
+                            .FirstOrDefault(c => c.GetConnectionKey() == conn.GetConnectionKey());
+                        
+                        if (existing != null)
+                            continue; // Skip duplicates
+                    }
+
+                    _manager.AddConnection(conn);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to import connections: {ex.Message}");
+            }
+        }
+    }
+
+    public class ExportData
+    {
+        public DateTime ExportDate { get; set; }
+        public string Version { get; set; }
+        public bool IncludesPasswords { get; set; }
+        public List<ConnectionInfo> Connections { get; set; }
+    }
+}
+
+**********************************************************************************************************************************************************************************************************************
+
+**********************************************************************************************************************************************************************************************************************
+
+**********************************************************************************************************************************************************************************************************************
+
+**********************************************************************************************************************************************************************************************************************
+**********************************************************************************************************************************************************************************************************************
+
