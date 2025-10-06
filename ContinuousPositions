@@ -1,0 +1,125 @@
+-- =====================================================
+-- STEP 1: CREATE SAMPLE TABLE AND INSERT TEST DATA
+-- =====================================================
+
+-- Create the positions table
+CREATE TABLE position_table (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    isin VARCHAR(20),
+    position_date DATE,
+    position_amount DECIMAL(18,2)
+);
+
+-- Insert sample data for testing
+-- ISIN 'ABC123' - has 5 continuous days from Jan 28 to Feb 1
+INSERT INTO position_table (isin, position_date, position_amount) VALUES
+('ABC123', '2024-01-25', 1000.00),
+('ABC123', '2024-01-26', 1000.00),
+('ABC123', '2024-01-28', 1000.00),  -- Start of 5 consecutive days
+('ABC123', '2024-01-29', 1000.00),
+('ABC123', '2024-01-30', 1000.00),
+('ABC123', '2024-01-31', 1000.00),
+('ABC123', '2024-02-01', 1000.00),  -- End of 5 consecutive days
+('ABC123', '2024-02-03', 1000.00);
+
+-- ISIN 'XYZ789' - has only 3 continuous days (should NOT appear)
+INSERT INTO position_table (isin, position_date, position_amount) VALUES
+('XYZ789', '2024-01-27', 500.00),
+('XYZ789', '2024-01-28', 500.00),
+('XYZ789', '2024-01-29', 500.00),
+('XYZ789', '2024-02-01', 500.00),
+('XYZ789', '2024-02-04', 500.00);
+
+-- ISIN 'DEF456' - has 6 continuous days from Feb 28 to Mar 4
+INSERT INTO position_table (isin, position_date, position_amount) VALUES
+('DEF456', '2024-02-26', 2000.00),
+('DEF456', '2024-02-28', 2000.00),  -- Start of 6 consecutive days
+('DEF456', '2024-02-29', 2000.00),
+('DEF456', '2024-03-01', 2000.00),
+('DEF456', '2024-03-02', 2000.00),
+('DEF456', '2024-03-03', 2000.00),
+('DEF456', '2024-03-04', 2000.00);  -- End of 6 consecutive days
+
+-- ISIN 'GHI999' - has exactly 5 continuous days
+INSERT INTO position_table (isin, position_date, position_amount) VALUES
+('GHI999', '2024-03-27', 1500.00),
+('GHI999', '2024-03-28', 1500.00),  -- Start of 5 consecutive days
+('GHI999', '2024-03-29', 1500.00),
+('GHI999', '2024-03-30', 1500.00),
+('GHI999', '2024-03-31', 1500.00),
+('GHI999', '2024-04-01', 1500.00);  -- End of 5 consecutive days
+
+
+-- =====================================================
+-- STEP 2: QUERY TO FIND CONTINUOUS 5-DAY POSITIONS
+-- =====================================================
+
+WITH DateRanges AS (
+    -- Generate date ranges for each month: from 25th to 5th of next month
+    SELECT DISTINCT
+        DATEFROMPARTS(YEAR(position_date), MONTH(position_date), 25) AS range_start,
+        DATEADD(DAY, 5, DATEFROMPARTS(
+            CASE WHEN MONTH(position_date) = 12 THEN YEAR(position_date) + 1 ELSE YEAR(position_date) END,
+            CASE WHEN MONTH(position_date) = 12 THEN 1 ELSE MONTH(position_date) + 1 END,
+            1
+        )) AS range_end,
+        DATEFROMPARTS(YEAR(position_date), MONTH(position_date), 1) AS month_reference
+    FROM position_table
+    WHERE DAY(position_date) >= 25 OR DAY(position_date) <= 5
+),
+PositionsInRange AS (
+    -- Get all positions within each date range and identify consecutive groups
+    SELECT 
+        dr.month_reference,
+        dr.range_start,
+        dr.range_end,
+        t.isin,
+        t.position_date,
+        t.position_amount,
+        -- This calculates consecutive date groups
+        DATEADD(DAY, 
+            -ROW_NUMBER() OVER (PARTITION BY dr.month_reference, t.isin ORDER BY t.position_date),
+            t.position_date
+        ) AS date_group
+    FROM DateRanges dr
+    INNER JOIN position_table t
+        ON t.position_date >= dr.range_start 
+        AND t.position_date <= dr.range_end
+        AND t.position_amount > 0
+),
+ConsecutiveGroups AS (
+    -- Count consecutive days for each group
+    SELECT 
+        month_reference,
+        isin,
+        date_group,
+        MIN(position_date) AS consecutive_start_date,
+        MAX(position_date) AS consecutive_end_date,
+        COUNT(*) AS consecutive_days
+    FROM PositionsInRange
+    GROUP BY month_reference, isin, date_group
+    HAVING COUNT(*) >= 5
+)
+-- Final result: ISINs with 5 or more continuous days
+SELECT 
+    FORMAT(month_reference, 'yyyy-MM') AS month_period,
+    isin,
+    consecutive_start_date,
+    consecutive_end_date,
+    consecutive_days
+FROM ConsecutiveGroups
+ORDER BY month_reference, isin, consecutive_start_date;
+
+
+-- =====================================================
+-- STEP 3: VIEW THE RAW DATA (for verification)
+-- =====================================================
+
+SELECT 
+    isin,
+    position_date,
+    position_amount,
+    FORMAT(position_date, 'yyyy-MM') AS year_month,
+    DAY(position_date) AS day_of_month
+FROM position_table
+ORDER BY isin, position_date;
