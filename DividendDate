@@ -1,0 +1,172 @@
+-- SQL Server (T-SQL) Version
+-- Step 1: Get the quantity held on each dividend date
+WITH DividendDateQuantity AS (
+    SELECT 
+        dd.StockName,
+        dd.DividendDate,
+        s.Quantity AS QuantityOnDividendDate
+    FROM DividendDate dd
+    LEFT JOIN Security s 
+        ON dd.StockName = s.StockName 
+        AND CAST(dd.DividendDate AS DATE) = CAST(s.Date AS DATE)
+),
+
+-- Step 2: Get holdings within the 28-day range (14 days before and 14 days after dividend date)
+-- Example: Dividend on Feb 1 -> Check from Jan 18 to Feb 15
+HoldingsInRange AS (
+    SELECT 
+        ddq.StockName,
+        ddq.DividendDate,
+        ddq.QuantityOnDividendDate,
+        s.Date AS CheckDate,
+        s.Quantity AS QuantityOnCheckDate,
+        DATEDIFF(DAY, ddq.DividendDate, s.Date) AS DaysFromDividend,
+        -- Calculate if quantity meets 50% threshold
+        CASE 
+            WHEN s.Quantity >= (ddq.QuantityOnDividendDate * 0.5) 
+            THEN 1 
+            ELSE 0 
+        END AS MeetsThreshold,
+        -- Row number for consecutive day checking
+        ROW_NUMBER() OVER (
+            PARTITION BY ddq.StockName, ddq.DividendDate 
+            ORDER BY s.Date
+        ) AS RowNum
+    FROM DividendDateQuantity ddq
+    INNER JOIN Security s 
+        ON ddq.StockName = s.StockName
+        AND s.Date BETWEEN DATEADD(DAY, -14, ddq.DividendDate) 
+                       AND DATEADD(DAY, 14, ddq.DividendDate)
+),
+
+-- Step 3: Create groups for consecutive days that meet the threshold
+ConsecutiveGroups AS (
+    SELECT 
+        StockName,
+        DividendDate,
+        QuantityOnDividendDate,
+        CheckDate,
+        QuantityOnCheckDate,
+        DaysFromDividend,
+        MeetsThreshold,
+        RowNum,
+        -- Create a group identifier for consecutive days meeting threshold
+        RowNum - SUM(MeetsThreshold) OVER (
+            PARTITION BY StockName, DividendDate 
+            ORDER BY CheckDate 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS ConsecutiveGroup
+    FROM HoldingsInRange
+),
+
+-- Step 4: Count consecutive days in each group where threshold is met
+ConsecutiveStreaks AS (
+    SELECT 
+        StockName,
+        DividendDate,
+        QuantityOnDividendDate,
+        ConsecutiveGroup,
+        MIN(CheckDate) AS StreakStartDate,
+        MAX(CheckDate) AS StreakEndDate,
+        COUNT(*) AS ConsecutiveDays,
+        MIN(QuantityOnCheckDate) AS MinQuantityInStreak,
+        AVG(QuantityOnCheckDate) AS AvgQuantityInStreak
+    FROM ConsecutiveGroups
+    WHERE MeetsThreshold = 1
+    GROUP BY StockName, DividendDate, QuantityOnDividendDate, ConsecutiveGroup
+),
+
+-- Step 5: Determine eligibility based on maximum consecutive days
+EligibilityCheck AS (
+    SELECT 
+        StockName,
+        DividendDate,
+        QuantityOnDividendDate,
+        MAX(ConsecutiveDays) AS MaxConsecutiveDays
+    FROM ConsecutiveStreaks
+    GROUP BY StockName, DividendDate, QuantityOnDividendDate
+),
+
+-- Get details of longest streak
+LongestStreakDetails AS (
+    SELECT 
+        cs.StockName,
+        cs.DividendDate,
+        cs.StreakStartDate AS LongestStreakStart,
+        cs.StreakEndDate AS LongestStreakEnd,
+        cs.MinQuantityInStreak AS MinQuantityInLongestStreak,
+        cs.ConsecutiveDays,
+        ROW_NUMBER() OVER (
+            PARTITION BY cs.StockName, cs.DividendDate 
+            ORDER BY cs.ConsecutiveDays DESC, cs.StreakStartDate
+        ) AS StreakRank
+    FROM ConsecutiveStreaks cs
+)
+
+-- Final output with detailed eligibility information
+SELECT 
+    ec.StockName,
+    ec.DividendDate,
+    ROUND(ec.QuantityOnDividendDate, 2) AS QuantityOnDividendDate,
+    ROUND(ec.QuantityOnDividendDate * 0.5, 2) AS RequiredMinQuantity,
+    ec.MaxConsecutiveDays,
+    lsd.LongestStreakStart,
+    lsd.LongestStreakEnd,
+    ROUND(lsd.MinQuantityInLongestStreak, 2) AS MinQuantityInLongestStreak,
+    CASE 
+        WHEN ec.MaxConsecutiveDays >= 14 THEN 'ELIGIBLE' 
+        ELSE 'NOT ELIGIBLE' 
+    END AS DividendEligibility,
+    CASE 
+        WHEN ec.MaxConsecutiveDays >= 14 
+            THEN 'Meets 14-day requirement'
+        WHEN ec.MaxConsecutiveDays >= 10 
+            THEN 'Close - only ' + CAST(ec.MaxConsecutiveDays AS VARCHAR) + ' consecutive days'
+        WHEN ec.MaxConsecutiveDays >= 7 
+            THEN 'Partial - only ' + CAST(ec.MaxConsecutiveDays AS VARCHAR) + ' consecutive days'
+        ELSE 'Failed - only ' + CAST(ec.MaxConsecutiveDays AS VARCHAR) + ' consecutive days'
+    END AS ComplianceStatus
+FROM EligibilityCheck ec
+LEFT JOIN LongestStreakDetails lsd
+    ON ec.StockName = lsd.StockName 
+    AND ec.DividendDate = lsd.DividendDate
+    AND lsd.StreakRank = 1
+ORDER BY ec.StockName, ec.DividendDate;
+
+
+-- ============================================
+-- DETAILED DAY-BY-DAY VIEW FOR INVESTIGATION
+-- ============================================
+-- Use this query to see the daily breakdown for a specific stock/dividend
+
+/*
+WITH DividendDateQuantity AS (
+    SELECT 
+        dd.StockName,
+        dd.DividendDate,
+        s.Quantity AS QuantityOnDividendDate
+    FROM DividendDate dd
+    LEFT JOIN Security s 
+        ON dd.StockName = s.StockName 
+        AND CAST(dd.DividendDate AS DATE) = CAST(s.Date AS DATE)
+)
+
+SELECT 
+    s.Date AS HoldingDate,
+    s.Quantity AS QuantityHeld,
+    ddq.QuantityOnDividendDate AS DividendDateQuantity,
+    ROUND(ddq.QuantityOnDividendDate * 0.5, 2) AS RequiredQuantity,
+    DATEDIFF(DAY, ddq.DividendDate, s.Date) AS DaysFromDividend,
+    CASE 
+        WHEN s.Quantity >= (ddq.QuantityOnDividendDate * 0.5) THEN 'YES' 
+        ELSE 'NO' 
+    END AS MeetsThreshold
+FROM Security s
+CROSS JOIN DividendDateQuantity ddq
+WHERE s.StockName = 'Apple'
+  AND ddq.StockName = 'Apple'
+  AND ddq.DividendDate = '2025-01-31'
+  AND s.Date BETWEEN DATEADD(DAY, -14, ddq.DividendDate) 
+                 AND DATEADD(DAY, 14, ddq.DividendDate)
+ORDER BY s.Date;
+*/
